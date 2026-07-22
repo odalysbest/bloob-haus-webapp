@@ -1,0 +1,67 @@
+# Deploy Odalys — lives ONLY in odalysbest/bloob-haus-webapp.
+#
+# Model 2: this fork builds the site in ITS OWN Actions, then deploys the
+# finished _site/ to the maintainer's Cloudflare Pages project.
+#
+# Required repo secrets (Settings > Secrets and variables > ACTIONS, not Agents):
+#   CLOUDFLARE_API_TOKEN   set by the maintainer (dedicated + revocable)
+#   CLOUDFLARE_ACCOUNT_ID  set by the maintainer
+#   CONTENT_REPO_TOKEN     YOURS - a PAT that can read your vault repo
+#
+# Three names that are NOT interchangeable:
+#   SITE_NAME=odalys / odalys.bloob.haus / --project-name=odalys-bloob
+
+name: Deploy Odalys
+
+on:
+  # Fork changes on main (skip doc-only edits)
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - '.gitignore'
+
+  # Content repo webhook — Odalys's VAULT repo fires repository_dispatch on push
+  # (same mechanism marbles/buffbaby/melt use). This replaces a Cloudflare Deploy Hook.
+  repository_dispatch:
+    types: [deploy-odalys]
+
+  # Manual trigger from the GitHub UI
+  workflow_dispatch:
+
+jobs:
+  test-build-deploy:
+    # Safety: only run inside Odalys's fork. If this file ever leaks upstream, it
+    # no-ops in Leon's repo instead of double-deploying.
+    if: ${{ github.repository == 'odalysbest/bloob-haus-webapp' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout builder repo (the fork)
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build odalys site
+        run: SITE_NAME=odalys node scripts/build-site.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.CONTENT_REPO_TOKEN }}
+
+      - name: Deploy to Cloudflare Pages (Leon's account, project "odalys-bloob")
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy _site --project-name=odalys-bloob
