@@ -1,0 +1,17 @@
+# odalys theme (forked from melt)
+# Starting point: melt's soft gradient look — purple-mauve background, handwritten
+# headings, bubble navigation. Customize freely; this is odalys's own copy.
+# Built for: odalys.bloob.haus
+
+name: odalys
+version: "0.1.0"
+description: "Odalys's personal theme, forked from melt (soft gradient + bubble navigation)."
+
+visualizer_defaults:
+  bubble-nav: true
+  folder-preview: true
+
+feature_defaults:
+  image_zoom: true
+  backlinks: false
+  rss: false

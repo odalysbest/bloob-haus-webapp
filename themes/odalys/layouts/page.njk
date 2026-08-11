@@ -1,0 +1,21 @@
+---
+layout: layouts/article.njk
+---
+{#
+  melt's `page` layout is an ALIAS for the `article` shape.
+
+  Every melt content page declares `bloob-shape: article` (2026-07-27), so this
+  file is only reached by the preprocessor's step-5 default — an ordinary page
+  whose declared shape does not exist yet, e.g. `bloob-shape: guide` before a
+  `guide` shape is built. See shapes.md → "Unknown shape names".
+
+  It cannot simply be deleted: the fallback resolves to the literal path
+  `layouts/page.njk`, so Eleventy needs the file to exist. Making it an alias
+  means an un-built shape degrades to melt's real page treatment rather than to
+  a second, drifting copy of it.
+
+  Content flows through once: this template emits the page body, and that output
+  becomes `content` for article.njk, which supplies the header, dates, share bar
+  and comments.
+#}
+{{ content | safe }}

@@ -1,0 +1,29 @@
+---
+layout: layouts/base.njk
+---
+<div class="home-wrapper">
+  {# Logo is the page's accessible heading now that the text h1 is hidden —
+     its alt text (site.logoAlt) must stay exposed to screen readers #}
+  <h1 class="home-logo">
+    {% if site.logo %}
+    <img src="{{ site.logo }}" alt="{{ site.logoAlt or site.title }}" class="no-zoom" />
+    {% endif %}
+  </h1>
+
+  {# Text title hidden — the logo image already carries the "MELT" wordmark.
+     Re-enable by uncommenting the line below. #}
+  {# <h1 class="home-title">{{ site.title }}</h1> #}
+
+  {# Tagline prefers `subtitle:` frontmatter from the homepage .md (e.g. _index.md);
+     falls back to site.description from _bloob-settings #}
+  <p class="home-tagline">{{ subtitle or site.description }}</p>
+
+  {#
+    BLOOB SLOT: bubble-nav visualizer
+    index.md contains :::bubble-nav block — visualizer renders it into .bubble-nav-container.
+    Until bubble-nav visualizer is built, content renders as a fallback link list.
+  #}
+  <div class="home-nav-area">
+    {{ content | safe }}
+  </div>
+</div>

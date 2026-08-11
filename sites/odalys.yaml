@@ -23,11 +23,11 @@ content:
   repo: "odalysbest/<vault-repo>"
   branch: "main"
 
-# Theme. Starting on `melt` so the first build works out of the box.
-# RECOMMENDED next step: `cp -r themes/melt themes/odalys`, then set this to
-# "odalys". melt is a live client theme — editing it directly means upstream melt
-# changes reshape this site, and local changes leak into a client's site.
-theme: "melt"
+# Theme. Forked from `melt` into `themes/odalys/` so this site can be customized
+# without touching melt (a live client theme — editing it in place would let
+# upstream melt changes reshape this site, and local changes leak into a client's).
+# To pull future melt improvements, diff themes/melt against themes/odalys by hand.
+theme: "odalys"
 
 # URL slug strategy: preserve-case keeps original filename casing, spaces → hyphens
 permalinks:
