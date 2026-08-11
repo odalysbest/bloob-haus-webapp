@@ -14,7 +14,21 @@ Newest entries at the top.
 
 ---
 
-## 2026-07-29 — first local render: three first-run snags on Linux
+## 2026-08-10 — upstream pull (103 commits) + theme fork, both clean
+Synced the fork with `upstream/main` — it was 2 ahead / 103 behind. The merge auto-resolved with
+**zero conflicts** (223 files, +16.7k/-3.9k), and all 851 tests passed after `npm install`. Two things
+that made it smooth and are worth keeping: (1) `sites/odalys.yaml` was byte-identical on both sides
+(upstream had independently added it), so no conflict; (2) the `.gitattributes merge=ours` rule for
+`.github/workflows/**` protected `deploy-odalys.yml` — but the driver was NOT configured on this clone,
+so I had to run `git config merge.ours.driver true` first. **Suggestion:** the onboarding could mention
+that the `ours` driver must be enabled per-clone *before the first merge*, not just eventually — it's
+easy to merge once without it and not notice.
+
+Then forked the theme: `cp -r themes/melt themes/odalys` + set `theme: "odalys"`. Minor friction —
+the copied `theme.yaml` still said `name: melt` and "Built for melt.bloob.haus (Whitney & Vicki)", so
+a fresh fork silently identifies as the client's theme until you edit it by hand. A `cp`-based fork
+leaves those stale; a tiny "rename your theme" helper (or a note in the doc) would help. Forked theme
+builds and serves fine (`Theme: odalys`, 12 pages, 0 broken links).
 Ran `dev-local.js --site=odalys` against my real vault (29 notes). It built and served at
 `localhost:8080` — individual note pages render great. Three things a first-timer hits:
 
