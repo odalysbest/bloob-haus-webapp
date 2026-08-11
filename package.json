@@ -10,6 +10,7 @@
     "dev:buffbaby": "node scripts/dev-local.js --site=buffbaby --content=../buffbaby",
     "dev:marbles": "node scripts/dev-local.js --site=marbles --content=../bloob-haus-marbles",
     "dev:melt": "node scripts/dev-local.js --site=melt --content=../melt-website",
+    "dev:odalys": "node scripts/dev-local.js --site=odalys \"--content=$HOME/Documents/Obsidian Vault\"",
     "dev:alter-engineers": "node scripts/dev-local.js --site=alter-engineers \"--content=G:/Shared drives/ACE_Drive/04_Marketing/Website/_live-website-content-obsidian-repo\"",
     "dev:magic-machine": "node scripts/dev-magic-machine.js",
     "assemble": "node scripts/assemble-src.js",
