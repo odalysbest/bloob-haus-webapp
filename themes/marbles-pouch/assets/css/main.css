@@ -46,6 +46,13 @@
   --pagefind-ui-border: rgba(145, 76, 154, 0.2);
   --pagefind-ui-tag: rgba(145, 76, 154, 0.1);
   --pagefind-ui-font: "Nunito Sans", sans-serif;
+
+  /* Shared search-surface appearance (--sv-input-*). Drives BOTH the site-wide
+     Pagefind bar and the collection shape's own filter input, so the marbles
+     glass effect is identical wherever a search surface appears. */
+  --sv-input-bg: rgba(255, 255, 255, 0.85);
+  --sv-input-bg-focus: rgba(255, 255, 255, 0.85);
+  --sv-input-focus-ring: 0 0 0 3px rgba(145, 76, 154, 0.12);
 }
 
 *,
@@ -700,37 +707,18 @@ a.internal-link:hover {
 }
 
 /* --- Share bar --- */
-.share-bar {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: var(--spacing-sm);
-}
-
+/* Share bar: the `article` shape owns it (lib/visualizers/article/styles.css), which
+   loads after this file and carries the icon-collapse behavior. The near-identical
+   copy that used to live here only restated the shape's defaults, so it was deleted
+   2026-07-28 rather than kept in sync by hand. Colors still come from this theme's
+   tokens. Restore a rule here only to diverge deliberately. */
 .share-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 14px;
-  border-radius: 20px;
-  border: 1px solid var(--border-color);
-  background: transparent;
   color: var(--text-muted, var(--accent-dark));
-  font-family: var(--font-body);
-  font-size: 0.82rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
 }
 
 .share-btn:hover {
   background: var(--bg-secondary, rgba(0,0,0,0.05));
   border-color: var(--accent-dark);
-}
-
-.share-btn--confirmed {
-  border-color: var(--accent-color);
-  color: var(--accent-color);
 }
 
 /* --- Heading anchors --- */
@@ -947,15 +935,9 @@ details > *:not(summary) {
   margin: 0 0 var(--spacing-xl);
 }
 
-/* Marbles glass effect */
-.pagefind-ui__search-input {
-  background: rgba(255, 255, 255, 0.85) !important;
-}
-
-/* Marbles purple focus glow */
-.pagefind-ui__search-input:focus {
-  box-shadow: 0 0 0 3px rgba(145, 76, 154, 0.12) !important;
-}
+/* Marbles glass effect + purple focus glow now come from the shared
+   --sv-input-* tokens declared in :root, so the site-wide Pagefind bar and the
+   collection shape's own filter input match. See :root above. */
 
 /* Slightly more transparent filter blocks */
 .pagefind-ui__filter-block {

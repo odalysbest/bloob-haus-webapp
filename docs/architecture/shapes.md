@@ -55,6 +55,100 @@ The heuristic that emerges: shapes that are *transformation lenses* tend to over
 
 This policy is part of the shape's contract and must be declared in `schema.md`. It's also the source of the placement system choice: override shapes usually use a single placement system (everything goes in the same pool); preserve shapes often need richer placement (each item may need its own position).
 
+### Presentation follows the policy — and CSS does not enforce it for you
+
+Styling is part of rendering, so the container-contents policy already answers the question:
+
+> **A `preserve` container must let a nested shape style itself. An `override` container imposes its
+> own styling on what it holds. The policy the shape already declares is the answer — there is no
+> separate styling policy to invent.**
+
+`article` is a preserve container: a collection nested in an article body renders the way the
+*collection* wants, not the way the article's prose does.
+
+**The problem is purely mechanical: CSS has no notion of this policy.** The cascade does not know a
+shape boundary exists, so a preserve container leaks its prose styles into children by default and
+"who wins" is decided by specificity accident rather than by the declared policy.
+
+A container shape legitimately styles its prose (`.article-body a { text-decoration: underline }`).
+But a nested shape's markup lives *inside* that body, so the container's rule applies to it too —
+and usually wins, because a descendant selector like `.article-body a` (0,1,1) outranks a bare
+`.fp-marble` (0,1,0). Nothing in override/preserve prevents this: a **preserve** container that
+faithfully lets a child render as itself will still restyle it.
+
+Both sides of the fix matter:
+- **Do not weaken the container.** Prose links *should* be underlined. Removing the container's rule
+  to fix a child is the wrong direction.
+- **The nested shape raises its own specificity** — scope to its container root
+  (`.collection-visualizer .fp-marble { … }`), which beats the container's descendant rule.
+
+Real case (2026-07-27): melt's pages moved onto the `article` shape, and every marble title in the
+nested collection came out underlined. Guarded by `tests/shape-nesting.test.js`, which asserts both
+directions — the nested item is not underlined **and** the container's prose links still are, so the
+fix cannot regress into "stop underlining links".
+
+This matters most for the composition the folder index is built on: **an `article` shape with a
+`collection` nested inside it.** Any new shape intended to be nested should scope its visual rules to
+its own container root from the start.
+
+**Current enforcement is convention only, and that does not scale** — every container × child pair is
+a fresh chance for a collision, found by eye. Two mechanisms could make the cascade express the
+policy instead. Not yet decided:
+
+| Option | How it maps to the policy | Cost / risk |
+|---|---|---|
+| **Cascade layers** (`@layer bloob.container, bloob.shape, bloob.lens`) | A shape's own styles sit in a layer that always beats a container's prose layer → **preserve is automatic**. An override/lens container puts its transformation styles in the winning layer → **override is automatic**. Specificity stops mattering. | Every shape stylesheet must be wrapped. **Unlayered CSS beats all layered CSS**, so theme `main.css` would outrank every shape unless themes are layered too — needs deciding, since themes overriding shapes is often desirable. |
+| **`@scope` donut** (`@scope (.article-body) to (.collection-visualizer)`) | Expresses "style my body, but stop at a nested shape" literally. | Per-pair rather than global; each container must know its children. Requires reasonably modern browsers. |
+
+Until one is adopted, the convention above (nested shape scopes to its own container root) is the
+rule, and `tests/shape-nesting.test.js` is the guard.
+
+**Full explainer + recommendation** (what a cascade layer actually is, the unlayered-wins trap, and
+the `@scope` donut, written for someone who has not used either): see
+`docs/superpowers/specs/2026-07-27-collection-pure-renderer-design.md` → "OPEN follow-on decision".
+
+## Width preference
+
+**A shape declares how wide it wants to be; the container and theme decide whether it gets it.**
+
+This is the container-contents policy applied to layout — **not a new axis.** A `preserve` container
+lets a nested shape take the width it asks for; an `override` container imposes its own. There is no
+separate "width policy" to declare, for the same reason there is no separate styling policy.
+
+| Value | Meaning |
+|---|---|
+| `prose` | The container's reading measure. The default for anything undeclared. |
+| `wide` | Wider than the reading column — card grids, galleries, tables. |
+| `full` | Edge to edge. |
+
+**Declared in three tiers**, matching the model in open question #2:
+
+```jsonc
+// manifest.json — the shape's default
+"width": "wide"
+```
+```yaml
+# fence or ::: settings — the instance override
+width: prose
+```
+
+**Precedence:** instance > shape default > `prose`. **The theme is the final arbiter** — it defines
+how wide "wide" is. **Unknown values fall back to `prose` silently**, like an unknown `bloob-shape:`.
+
+### Degradation is the default state
+
+The theme opts in by defining `--shape-width-wide`. Until it does, `wide` resolves to the prose
+measure and the page renders exactly as it did before the contract existed. That property is what
+allows a shape to default to `wide` without touching any theme that has not adopted it — `collection`
+does exactly this, and melt, marbles-pouch, warm-kitchen and buffbaby were unaffected.
+
+Mechanism lives in `lib/visualizers/article/styles.css` (breakout via `width` + `margin-left: 50%` +
+`translate`, clamped to the viewport so a wide shape can never cause horizontal overflow). Phones
+disable the breakout entirely. Guarded by `tests/shape-width.test.js`, which asserts both directions
+— a wide child really is wider **and** prose siblings are not dragged with it.
+
+Spec: `docs/superpowers/specs/2026-07-28-shape-width-contract-design.md`.
+
 ## Placement systems
 
 Content placement is a property of the shape. Different shapes use different placement systems; a shape declares which one(s) it supports. Authors and AI use whatever the shape provides.
@@ -258,6 +352,55 @@ The `:::settings` path above assumes per-instance configuration is YAML key/valu
 `garden` is the precedent (see its `schema.md`). Shapes with plain key/value knobs should keep using
 `:::settings` — don't invent a grammar you don't need.
 
+## Authoring & resolution conventions
+
+These apply to **every shape that carries links or images** (scene-nav, garden, …), so they live
+here once. Full rationale: `docs/implementation-plans/2026-07-21_scene-nav-builder-rework-and-resolution.md`.
+
+1. **Dual link syntax, always.** A shape accepts **both** wiki `[[name]]` and markdown `[label](target)`
+   for images *and* note-links. Wiki is auto-enabled and handled gracefully (many authors use only
+   wiki); it carries no inline label, so the label comes from a nested `label:` attribute (or defaults).
+2. **Basename-first resolution (the Obsidian model).** Refs resolve by **bare name, no folder**; a
+   folder is added only to disambiguate when two files share a name. Full/relative paths stay valid.
+3. **A shape resolves its own refs when the general pass can't.** If a shape's grammar uses link forms
+   the general preprocessor skips (e.g. `[alt](x.png)` without the `!`, chosen so Obsidian doesn't embed
+   and clutter the source), the shape resolves them itself. Raw refs are the source-of-truth; resolution
+   is a **render-time projection**, never written back — so a builder can round-trip the exact grammar.
+4. **Literal spaces are authored; encoding is a render concern.** Authors and builders write literal
+   spaces (`Contact us.png`); parsers accept both literal spaces and `%20`. URL-encoding happens only in
+   the resolved output URL.
+5. **Tri-state + boolean vocabulary (all shapes).** Optional attribute: **absent → default**,
+   **`false`/`off` → disable**, **`true`/`on` → enable**, **other value → override**; `false`/`off` and
+   `true`/`on` accepted case-insensitively so authors don't hit syntax errors. Distinct from **bare
+   flags** (`- background`, `- flipH` → true) and **keyed values** (`- at: x, y`).
+6. **A write-face (builder) emits authorable output that round-trips.** Whatever a builder produces
+   must be something a human could have typed and that re-parses + re-renders identically. It preserves
+   the authored **target** granularity (full path stays full path; basename stays basename, literal
+   spaces). **Note-links (`goto`) are preserved verbatim** — the exact `[label](note.md)` or `[[wiki]]`
+   the author wrote, so they stay clickable in Obsidian (scene-nav does this via a pre-resolution
+   `data-vis-raw-source` capture; see its schema.md). **Image refs**, which carry no separate label,
+   are emitted in markdown `[alt](target)` form.
+
+7. **A link's tab is decided by origin, not by the shape.** A shape that navigates on click
+   opens **the same tab for a target on this site** and **a new tab for one off it**. Staying
+   in the tab is the correct default for internal navigation — a site that spawns a tab per
+   click is the bug, not the feature. An explicit per-element `newTab: on/off` (tri-state, per
+   #5) overrides it, and *absent means absent*: nothing is written to the markdown until the
+   author actually chooses. Reference implementation: `lib/visualizers/scene-nav/link-target.js`
+   — pure, with the current origin **injected**, so the runtime, the builder's live preview and
+   the tests all reach the same answer.
+   - `mailto:`/`tel:` count as same-tab: the OS handler takes over and the page stays put.
+   - A scheme-less `example.com` is indistinguishable from a relative path and routes as
+     **internal**. A builder should say so rather than guess (scene-nav's does).
+   - An **exported embed inverts the default** to new-tab: it sits on someone else's page,
+     where navigating the host away is never wanted.
+
+8. **A mobile layout inherits desktop by default.** A shape with a responsive/mobile variant treats
+   mobile as identical to desktop **unless the author establishes a divergence** — an explicit mobile
+   aspect-ratio, or per-element mobile position overrides. No divergence → mobile == desktop (same
+   ratio, same positions). A builder should surface this state plainly ("same as desktop" vs
+   "customized") so an author never sees a silently-broken mobile view they didn't create.
+
 ## Comments — a shape behavior
 
 Whether a page shows comments, and *where* the comment thread sits, is a **shape decision** —
@@ -400,8 +543,23 @@ This works because `assemble-src.js` copies `themes/_base/partials/` into `src-*
 ## Unknown shape names — fallback behaviour
 
 When `effectiveShape` names a shape with no `lib/visualizers/[name]/` folder:
-- If the shape was **explicitly declared** in frontmatter → logs a warning, falls back to `page.njk`
-- If the shape came from **`default_shape`** → silent, falls back to `page.njk`
+- If the shape was **explicitly declared** in frontmatter → logs a warning, falls back to the default layout
+- If the shape came from **`default_shape`** → silent, falls back to the default layout
+
+> ⚠️ **"the default layout" is NOT always `page.njk`.** It is `page.njk` for ordinary pages but
+> **`layouts/base.njk` for `index.md` / `_index.md`** — see step 5 of "How the preprocessor selects
+> the layout" above. `base.njk` is bare chrome: **no content column and no `<h1>` render.**
+>
+> This bites hard, because the preprocessor strips a leading `# Heading` from the body on the
+> assumption that `page.njk` will re-render it as the title. On an index file that fell through to
+> `base.njk`, the title is consumed into frontmatter and then **never displayed** — the page silently
+> loses both its column and its heading.
+>
+> Real case (2026-07-27): melt's `Resources/_index.md` declared `bloob-shape: page`. There is no
+> `lib/visualizers/page/`, so it fell through to `base.njk` and rendered untitled and full-bleed,
+> while `about-melt.md` — the same declared shape, an ordinary page — rendered correctly via
+> `page.njk`. The console warning even said *"falling back to page.njk"*, which was wrong for that
+> file. **If a page's title vanishes and its column is gone, check the resolved `layout:` first.**
 
 This means content files can use `bloob-shape: note` today even though `lib/visualizers/note/` doesn't exist yet — the build won't crash. When the `note` shape is eventually built and its folder appears, those files will automatically pick up its layout.
 
@@ -433,9 +591,10 @@ Authoring goal: a `folder-preview` code fence in the body (no `bloob-shape:` in 
 | `marble` | — | Not yet built | — | Declared as `default_shape` in marbles vault — will auto-apply layout once shape folder exists |
 | `note` | — | Not yet built | — | Used as `bloob-shape: note` in content files — safely falls back to `page.njk` until built |
 | `page-preview` | runtime | Partial | — | — |
+| `page` | — | **Not a shape** | — | A bare NAME with no `lib/visualizers/page/` package, so `bloob-shape: page` resolves to nothing and the layout comes entirely from the step-5 fallback. It works on ordinary pages only by coincidence (that fallback *is* `page.njk`); on an `index.md` the same declaration lands on `base.njk` and the page loses its column and title. Four divergent theme-local `page.njk` files back it. **Prefer `bloob-shape: article`** — a real layout-only shape. If `page` should become real, add `lib/visualizers/page/manifest.json` with `defaultLayout: layouts/page.njk` and NO `layout.njk`, so each theme keeps its own. |
 | `photo-grid` | build-time | Partial | — | — |
 | `quotes-stack` | hybrid | Partial | — | Missing `schema.md` |
-| `scene-nav` | hybrid | Partial | planned (migrate `scene-nav-builder` out of `lib/magic-machines/` → `builder/`) | — |
+| `scene-nav` | hybrid | ✓ | ✓ `builder/` (debug-mode overlay; `:::` block + Shopify embed exports; magic machine deleted 2026-07-20) | v2 nested-bullet grammar; code fence deprecated |
 | `search` | hybrid | Partial | — | Missing `schema.md` |
 | `services` | build-time | Partial | — | Missing `schema.md` |
 | `slideshow` | build-time | ✓ | — | — |
@@ -588,6 +747,7 @@ Every shape's `schema.md` is the human- and AI-readable contract. For AI to reli
 ## Fence format / grammar (shapes with non-trivial body syntax: what each line means)
 ## Parsing rules (how the shape parses its block — see "Shape-named blocks" above)
 ## Chrome preference (and override behavior)
+## Width preference (prose | wide | full — see "Width preference" above)
 ## Content policy (override identity vs. preserve identity for contained shapes)
 ## Placement system (which system, vocabulary, defaults)
 ## Examples (complete .md file mockups)

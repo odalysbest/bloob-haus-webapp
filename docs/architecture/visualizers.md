@@ -8,6 +8,8 @@ Visualizers are the core of Bloob Haus - "little machines" that transform text i
 
 > **A visualizer is the *renderer face of a shape*.** "Visualizer", an inline `:::` block, and a `bloob-shape:` file are the same thing at different **scopes** — not different kinds of thing. This doc covers the *rendering* mechanics; the concept itself is owned by [`shapes.md`](shapes.md) (line 3) and [`ontology.md`](ontology.md) → "What a shape is". The "four types" and "file-scope" headings below are **activation triggers / scopes** (where and how a visualizer runs), not distinct species.
 
+> **Authoring & resolution conventions** (dual wiki+markdown links, basename-first resolution, shapes resolving their own refs, literal spaces, the tri-state / `on·off·true·false` vocabulary, and builder round-trip rules) are shared across all shapes and documented once in [`shapes.md`](shapes.md) → "Authoring & resolution conventions". Don't restate them per visualizer.
+
 ---
 
 ## Core Concepts
@@ -37,6 +39,190 @@ This enables:
 
 **Never put DOM operations in parser or renderer.**
 **Never put file system operations in parser or renderer.**
+
+---
+
+## The Pure-Renderer Standard
+
+**Status: adopted 2026-07-27. `collection` is the reference implementation.**
+**Applies to every shape that GENERATES CONTENT.** See "Which shapes are exempt" below.
+
+### The rule
+
+> **Markup comes from a pure renderer. `browser.js` never builds markup.**
+
+Four files, one responsibility each:
+
+| File | Purity | Role |
+|---|---|---|
+| `parser.js` | pure | block text → data |
+| `resolve.js` | pure fn, data **injected** | how the shape obtains data from *outside* its own block |
+| `renderer.js` | pure | data + settings → **complete final HTML string** |
+| `browser.js` | impure | **behavior only** — physics, Swiper, listeners, fetch |
+
+### Why: three hosts, one renderer
+
+A pure renderer runs anywhere. That gives three hosts which differ *only* in where the
+data comes from — never in what they produce:
+
+| Host | Data source | Output |
+|---|---|---|
+| **Node / build time** (`index.js`) | `readFileSync(graph.json)` | HTML baked into the page |
+| **Standalone playground** (future) | pasted / dropped content | same string, injected |
+| **Browser fallback** (`browser.js`) | `fetch("/graph.json")` | same string, injected |
+
+This is what the future standalone visualizer web app is built on. It gets every conforming
+shape **for free**, with no second implementation to drift.
+
+That drift is not hypothetical: scene-nav's standalone magic machine grew its own copy of the
+parser/renderer, the two diverged, and the fix was to delete one and make the shape's own files
+the single source of truth (see [DECISIONS.md](../implementation-plans/DECISIONS.md), 2026-07-20).
+A pure renderer makes that class of bug structurally impossible.
+
+### Why: SEO is decoupled from the visualization
+
+Before this standard, "does this shape have SEO?" was answered by "does it happen to have an
+isomorphic renderer?" — an accident of implementation. `collection` shipped build-time HTML for
+`display: cards` and an **empty div** for `list`, `slider`, `bubbles` and `marbles`. On the live
+melt Resources page a crawler saw **zero** links.
+
+With the standard, indexability is a property of the *shape*, not of *which visual you picked*.
+Every display mode ships real `<a href>` markup; `browser.js` adds behavior on top.
+
+**Do not "solve" SEO by rendering a hidden duplicate block.** Emitting a crawlable list that JS
+then replaces means a visible flash and `display:none` content, which Google discounts. Render
+the real markup for the real visual instead.
+
+Most "JS-only" renderers turn out not to need JS at all. All four of collection's were plain
+`document.createElement` markup with behavior bolted on afterwards — the physics and Swiper init
+are *behavior*, applied to elements that can perfectly well already exist.
+
+**There is deliberately no `seo:` on/off setting.** Hiding content from crawlers with JavaScript
+is not a privacy mechanism. `visibility: unlisted` is the real tool and already exists — see
+[security-by-obscurity.md](security-by-obscurity.md).
+
+### `resolve.js` — the only host-dependent seam
+
+Most shapes read their data from **inside** their own block (the markdown you typed), so
+`parser.js` is enough and there is no `resolve.js`.
+
+A shape needs `resolve.js` when its data lives **outside** the block — `graph.json`, a folder
+listing, an API. That is the entire reason such a shape has a host split at all.
+
+Keep it pure by **injecting** the data:
+
+```js
+// resolve.js — pure. Never reads anything itself.
+export function resolvePages(nodes, settings) { … }
+
+// index.js — the host does the impure read, then hands it in.
+const nodes = JSON.parse(readFileSync(graphPath, "utf-8")).nodes;
+const pages = resolvePages(nodes, settings);
+```
+
+Prior art: `lib/visualizers/scene-nav/resolve.js` (pure image-ref resolution against an injected
+attachment index) and `lib/visualizers/collection/resolve.js`.
+
+### Which shapes are exempt
+
+Shapes that **only enhance existing text** and generate no content of their own: `latex` (needs
+KaTeX at runtime), `citations`, `checkbox-tracker`, `page-preview`. There is nothing for a crawler
+to miss, so they legitimately stay `browser.js`-only.
+
+The test is not "does it need JS?" — it is **"if JS never runs, is content missing?"** If yes, it
+needs a pure renderer.
+
+### Conformance status
+
+**Conforming** (`parser.js` + `renderer.js`): `card-preview`, `image-grid`, `image-text`,
+`photo-grid`, `quotes-stack`, `scene-nav`, `services`, `slideshow`, `testimonials`,
+`heading-and-paragraph`, **`collection`** (2026-07-27).
+
+**Not yet conforming, generates content** — `folder-preview`, `circular-nav`, `fridge-magnets`,
+`tags`, `graph`. Tracked as **TECH-DEBT #40**. Convert each when next touched; do not retrofit
+them speculatively.
+
+### Per-page asset loading — the `detect` block
+
+**Status: shipped 2026-07-27. Enabled on `melt` and `marbles`.**
+
+Every page used to load every visualizer's CSS and JS. A shape can now declare
+how to tell it is present, and pages load only what they use.
+
+```jsonc
+// lib/visualizers/<shape>/manifest.json
+"detect": { "selectors": [".collection-visualizer"] }
+
+// or, for shapes whose markup is not theirs to emit:
+"detect": { "always": true, "reason": "attaches to Pagefind results created at runtime" }
+```
+
+Detection runs on the page's **rendered HTML** in an Eleventy transform, so it
+works for every activation route — fence, `:::`, `bloob-shape:`, or a theme
+partial dropping a shape into the nav. Themes emit
+`<!--bloob:visualizer-css-->` / `<!--bloob:visualizer-js-->` markers that the
+transform fills.
+
+Enable per site: `features.per_page_visualizers: true` in `sites/<name>.yaml`.
+Off (the default) reproduces the old behavior exactly.
+
+**A shape with no `detect` block is always loaded.** Opt-in, not opt-out — a
+wrong guess silently breaks a page, so the default must be safe.
+
+#### Declaring a selector is not enough — run the audit
+
+```bash
+npm run dev:<site>                                       # leave it running
+node scripts/audit-visualizer-detection.js --src=src-<name>
+```
+
+Checking "does my shape emit this class?" misses the real failure mode: **a
+stylesheet can own classes something else renders.** `article/styles.css` owns
+`.share-bar` / `.share-btn`, which `themes/_base/partials/share-bar.njk` puts on
+ordinary pages — so detecting only `.article-page` silently stripped the share
+bar's styling from 33 melt pages. Screenshots showed it only as a 5px height
+change.
+
+The audit loads each page with all CSS present, disables exactly what detection
+would drop, and compares every element's geometry. It groups pages by detection
+signature, so a 1159-page site audits in seconds. **Enable the flag on a new site
+only after a clean audit run.**
+
+#### Sometimes the right fix is to move the CSS, not to add a selector
+
+Adding `.share-bar` to `article`'s `detect` made the symptom go away, but it left a
+shape stylesheet owning classes the shape does not render. **If a stylesheet owns
+markup that lives in a `_base` partial — something several unrelated hosts include —
+it does not belong in a shape at all.** Its mechanics go in
+`themes/_base/assets/css/base.css`, which every theme loads unconditionally, and the
+per-page question disappears instead of being answered.
+
+That is what happened to the share bar on 2026-07-28: `.share-bar` was **removed**
+from `article`'s selectors when its CSS moved to `base.css`. Bonus, and the reason to
+prefer this direction: `base.css` loads *before* each theme's `main.css`, so a theme
+overrides with a plain class selector, where a shape stylesheet (which loads *after*
+`main.css`) forces themes to climb a specificity ladder to override it.
+
+Ask in this order: **(1)** is this markup mine to own? If no → `base.css`. **(2)** if
+yes, what classes does my stylesheet own? Those are the `detect` selectors — never
+"what does my renderer emit".
+
+Two things the audit deliberately ignores, both learned the hard way:
+- **zero-size elements**, stripped before measuring — a dropped shape's JS is
+  dropped with its CSS, so runtime-injected `display:none` scaffolding
+  (fridge-magnets' hidden modal) can never appear in a real per-page build.
+- **rAF-animated elements**, excluded via a control measurement — marble float
+  changes geometry between frames and would otherwise read as a regression.
+
+### Checklist for a new content-generating shape
+
+- [ ] `renderer.js` exports pure functions returning HTML **strings** — no `document`, no I/O
+- [ ] every display/variant the shape supports is reachable from `renderer.js`
+- [ ] external data (if any) arrives via an injected argument through `resolve.js`
+- [ ] `index.js` does the impure read and calls resolve → render
+- [ ] `browser.js` attaches behavior to existing elements; it does not build markup
+- [ ] a test asserts build-time output contains real `<a href>` and title text for **every** variant
+- [ ] no `display:none` / hidden duplicate of the content for crawlers
 
 ---
 

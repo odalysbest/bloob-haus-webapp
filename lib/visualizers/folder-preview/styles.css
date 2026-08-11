@@ -163,7 +163,11 @@
   font-size: 0.65rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.65);
+  /* Both bubble layouts render a light/translucent fill (glassmorphism gradient here, or the
+     page background showing through on .fp-marble below) — hardcoded white was illegible on
+     light themes. Token-driven so each theme's own text color applies (dark-on-light themes
+     get dark text, dark-background themes still get their own light --text-color). */
+  color: var(--text-light, rgba(0, 0, 0, 0.55));
   margin-bottom: 5px;
   pointer-events: none;
 }
@@ -172,7 +176,7 @@
   display: block;
   font-size: 0.82rem;
   font-weight: 600;
-  color: white;
+  color: var(--text-color, #1a1a1a);
   line-height: 1.3;
   pointer-events: none;
 }
@@ -232,12 +236,16 @@
 .fp-marble__title {
   position: relative;
   z-index: 1;
-  color: white;
+  /* .fp-marble has no background of its own — the marble.png texture sits at 38% opacity over
+     whatever the page background shows through, so hardcoded white was illegible on light
+     themes. Token-driven (see .fp-bubble__title above for the same fix + rationale); shadow
+     flipped from dark to a light halo so it still adds contrast now that the text is dark. */
+  color: var(--text-color, #1a1a1a);
   font-size: 0.85rem;
   font-weight: 600;
   line-height: 1.3;
   padding: 0 14px;
-  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.5);
+  text-shadow: 0 1px 6px rgba(255, 255, 255, 0.7);
   pointer-events: none;
 }
 
@@ -347,11 +355,13 @@
   line-height: 1.35;
 }
 
+/* One field per line, kept tight. Mirrors collection/styles.css — this file
+   loads later, so a divergence here silently overrides that one. */
 .fp-card__fields {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem 0.6rem;
-  margin-top: 0.1rem;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.25rem;
 }
 
 .fp-field {
@@ -375,6 +385,20 @@
   opacity: 0.8;
 }
 
+/* Card column ladder: 3 desktop -> 2 tablet -> 1 phone.
+   Must stay in sync with the identical ladder in collection/styles.css. This
+   file loads LATER (alphabetical), so any step declared there but missing here
+   is overridden and silently never applies — which is exactly how the phone
+   step was lost: collection declared `560px -> 1fr`, this file stopped at
+   `900px -> 2`, and AE shipped 2 cards at 132px wide on a 360px phone.
+   Guarded by tests/card-layout.test.js, which loads BOTH stylesheets.
+   Keep the explicit repeat(N, 1fr) ladder — auto-fill/auto-fit would make the
+   column count a function of available width and reintroduce 3-up on phones
+   the moment a container gets wider. */
 @media (max-width: 900px) {
   .fp-cards { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 560px) {
+  .fp-cards { grid-template-columns: 1fr; }
 }

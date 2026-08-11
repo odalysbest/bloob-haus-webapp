@@ -2,5 +2,12 @@
   "name": "article",
   "type": "layout",
   "defaultLayout": "layouts/article.njk",
-  "description": "Constrained reading-width page with title header and optional share bar. Share bar is on by default; opt out per-page with share_bar: false in a :::settings block."
+  "description": "Constrained reading-width page with title header and optional share bar. Share bar is on by default; opt out per-page with share_bar: false in a :::settings block.",
+  "detect": {
+    "selectors": [
+      ".article-page",
+      ".visitor-count"
+    ],
+    "note": ".share-bar was removed from this list on 2026-07-28 when its CSS moved to themes/_base/assets/css/base.css, which loads unconditionally \u2014 the shape no longer owns those classes, so there is nothing here to gate. .visitor-count stays: this stylesheet DOES own it, while themes/_base/partials/visitor-count.njk can render it on a page that is not article-shaped. Rule: list what this stylesheet owns, never what this shape's renderer emits."
+  }
 }

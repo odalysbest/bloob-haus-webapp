@@ -23,6 +23,7 @@ These settings work identically across every theme. They are part of the Bloob H
 | `hide_nav` | bool | `false` | Hide the site navigation bar on this page |
 | `hide_footer` | bool | `false` | Hide the site footer on this page |
 | `body_class` | string | — | Extra CSS class(es) added to `<body>` |
+| `background_image` | wikilink | site-wide `background_image` | Per-page override of the site background photo, e.g. `background_image: "[[photo.jpg]]"`. Resolved by `scripts/generate-background.js` → `site.backgroundImages`; the theme's `base.njk` picks the page value and falls back to the sitewide one. Requires a theme with a background-image system (melt today). |
 | `layout` | string | shape layout, or `layouts/page.njk` | Override Eleventy layout explicitly (rarely needed — prefer `bloob-shape`) |
 | `bloob-shape` | string | — | **Primary identity + rendering key.** Names the page's shape and drives (a) layout selection, (b) `renderFilescope()` body rendering (`lib/visualizers/[name]/index.js`), and (c) identity — banner image/text, graph icon, display name — looked up in `_bloob-shapes.md`. Identity resolves via `resolveIdentityKey` (precedence below). Shape config goes in a `::: settings` block in the body, not frontmatter. See `docs/architecture/shapes.md` + `visualizers.md`. |
 | `bloob-type` | string | — | **Legacy identity alias** for `bloob-shape` (older vaults; registry `_bloob-types.md`). Still accepted, and **wins for identity when explicitly set** — precedence `bloob-type` > `bloob-object` > `bloob-shape` — so a page may render as one shape while identifying as another. New content should use `bloob-shape:`. |
@@ -35,6 +36,7 @@ These settings work identically across every theme. They are part of the Bloob H
 | `website_status` | string | depends on `publish_by_default` | Used when `publish_mode: status_field`. `draft` = excluded from build. `unlisted` = built, hidden from all indexes. `archived` = built, Google-indexable, hidden from listings. `public` = fully published. Absent field = excluded if `publish_by_default: false`, treated as public if `true` (default). |
 | `transclusion_indicators` | bool | `true` (or site-wide default) | When `false`, `![[embeds]]` are inlined seamlessly with no wrapper div. When `true`, embeds are wrapped in `<div class="transclusion-embed">` so themes can add a visual indicator. Overrides `features.transclusion_indicators` from `_bloob-settings.md`. |
 | `comments` | bool | `true` | When `false`, suppresses the comment embed (`fast-comments-embed` fence) on this page. No effect unless the site has a `fast-comments-embed` snippet. |
+| `visitor_count` | bool | site-wide `show_visitor_count` | Per-page override for the GoatCounter visitor count, in **both** directions: `false` hides it on a page whose site shows it, `true` shows it on a site that is otherwise off. Cannot conjure a counter — the site still needs a `goat-counter-tracking` snippet, **and** "Allow using the visitor counter" must be enabled in the GoatCounter site's own settings (it defaults to off; without it the endpoint answers 403 and the widget stays hidden). Guarded by `tests/visitor-count-partial.test.js`. |
 | `bloob-page-id` | string | derived from URL | Override the canonical page ID (lowercased). Primary use: after moving/renaming a note, set this to its **old** ID so the FastComments thread stays attached. See `docs/architecture/urls-and-ids.md`. |
 
 #### Optional display fields (not in standard YAML, no UI prompt)
@@ -126,8 +128,9 @@ FastComments `urlId` and exposed as `<meta name="bloob-page-id">`. See the contr
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `logo` | string | Site logo — used in nav and as favicon source if `favicon` is not set |
+| `logo` | string | Site logo — used in nav and as favicon source if `favicon` is not set. A markdown-link label (`[alt text](file.png)`) becomes `site.logoAlt` — themes render it as the logo's alt attribute |
 | `favicon` | string | Favicon source image — takes priority over `logo` for favicon generation. Generates `favicon.png` (64×64) and `apple-touch-icon.png` (310×310) |
+| `background_image` | string | Optional site background image. Resolved like `logo` (wiki-link/md-link/path), resized to 1920px webp (`scripts/generate-background.js`, hash-cached) → `site.backgroundImage`. Themes decide whether/how to render it — `melt` shows it as a fixed full-bleed layer |
 
 Both fields accept the same value formats:
 - `"[[filename.png]]"` — wiki-link (resolves to `/media/filename.png`)
@@ -173,6 +176,7 @@ Documented in full in `docs/architecture/themes.md` → "Baseline Features Contr
 | `features.backlinks` | `true` | Backlinks section on each page |
 | `features.search` | `true` | Pagefind search |
 | `features.rss` | `true` | RSS feed |
+| `features.per_page_visualizers` | `false` | Load only the visualizer CSS/JS a page uses (TECH-DEBT #4). Set in `sites/<name>.yaml`, not `_bloob-settings.md`. Shapes opt in via `detect` in their `manifest.json`; unannotated shapes always load. **Run `node scripts/audit-visualizer-detection.js --src=src-<name>` against a real build before enabling on a new site.** On: melt, marbles. Off: buffbaby, alter-engineers. |
 | `features.sitemap` | `true` | sitemap.xml |
 | `features.og_images` | `true` | OG preview image generation |
 | `features.tags` | `true` | Tag system |
@@ -196,6 +200,30 @@ Documented in full in `docs/architecture/themes.md` → "Baseline Features Contr
 |-----|---------|-------------|
 | `media.convert_gif_to_mp4` | `true` | Auto-convert GIF files to MP4 at build time. GIFs are removed from the deployed output; photo-grid renders them as `<video autoplay loop muted playsinline>`. Videos play in the PhotoSwipe lightbox when clicked. On iOS Low Power Mode where autoplay is blocked, a ▶ play overlay appears; a "Play all animations" button is injected if any videos are paused. Set to `false` to keep GIFs rendered as `<img>` tags. |
 
+#### Analytics
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `show_visitor_count` | bool | `false` | Site-wide default for showing a per-page visitor count. Rendered by `themes/_base/partials/visitor-count.njk`, which the `article` shape includes; the count comes from GoatCounter's **JSON** counter endpoint (`https://CODE.goatcounter.com/counter/<path>.json`) and is written into the theme's own markup — **no GoatCounter image badge, iframe, or branding**. Override per page with `visitor_count:`. |
+
+**Two switches, and only one of them is in this repo.** A number appears only when *both*
+are on:
+
+1. `show_visitor_count: true` here (defaults off), **and**
+2. **"Allow using the visitor counter"** in the GoatCounter site's own settings — which
+   **also defaults to off**. Without it the endpoint answers
+   `403 Need to enable the 'allow using the visitor counter' setting`.
+
+The widget renders `hidden` and unhides only when a count actually arrives, so a site
+with just switch 1 on shows nothing rather than a broken pill. **If a count is not
+appearing, check switch 2 first** — it is the one that is easy to forget, because
+nothing in the build can detect it.
+
+The **site code is derived** from the `goat-counter-tracking` fence
+(`parseGoatCounterCode()`, `scripts/utils/bloob-settings-reader.js`) rather than
+configured twice. A self-hosted GoatCounter has no code subdomain, so it yields `null`
+and the counter stays off. Exposed to templates as `site.analytics`.
+
 #### Snippets & Embeds (raw code fences in the `_bloob-settings.md` **body**)
 
 Raw HTML/JS snippets are pasted as **named fenced code blocks in the body** of `_bloob-settings.md` (never in frontmatter — a raw `<script>` would break the YAML). Parsed by `parseEmbedFences()` in `scripts/utils/bloob-settings-reader.js`. **An empty fence is ignored** — that is how a user turns a snippet off ("present means on"). Every fence is exposed to templates as `site.embeds['<name>']`; fences in `EMBED_TARGETS` are additionally concatenated into `site.snippets.{head,bodyEnd}` and auto-injected.
@@ -206,7 +234,7 @@ Raw HTML/JS snippets are pasted as **named fenced code blocks in the body** of `
 | `goat-counter-tracking` | `<head>` | GoatCounter analytics — user pastes their own `<script data-goatcounter=…>`. Fires on every page including `/slug/embed/` versions (recorded under their natural `/…/embed/` path). |
 | `footer-snippet` | before `</body>` | Generic end-of-body injection |
 | `embed-endofbody` | before `</body>` | Generic end-of-body injection |
-| `fast-comments-embed` | content-bottom of `page.njk` (via `partials/comments.njk`) | Comment embed (e.g. FastComments). Rendered after `</article>` on content pages only — not on embed versions, folder indexes, or home. Opt out per-page with `comments: false`. Use `{{ page_id }}` for the comment thread key (FastComments `urlId`). |
+| `fast-comments-embed` | content-bottom of `page.njk` **and of the `article` shape** (via `partials/comments.njk`) | Comment embed (e.g. FastComments). Rendered after `</article>` on content pages only — not on embed versions, folder indexes, or home. On by default wherever the partial is included; opt out per-page with `comments: false`; renders nothing at all when this fence is absent. Use `{{ page_id }}` for the comment thread key (FastComments `urlId`). Guarded by `tests/comments-partial.test.js`. |
 | `embed-*` (any name) | *(not auto-injected)* | Available as `{{ site.embeds['embed-x'] \| safe }}` for manual placement anywhere in a theme. |
 
 **Per-page tokens** (substituted inside any snippet by the `injectPageVars` filter — a fixed vocabulary, *not* full template eval):
@@ -378,9 +406,41 @@ its body typeface (faces with a tall x-height read larger than their nominal siz
 | `--article-h4-size` | `1rem` | In-body `#### h4` |
 | `--article-h5-size` | `0.9rem` | In-body `##### h5` |
 | `--article-h6-size` | `0.82rem` | In-body `###### h6` |
+| `--article-width` | `820px` | Reading-column max-width |
+| `--shape-width-wide` | `100%` | How wide a nested shape declaring `width: wide` may break out to. Default `100%` = prose measure, i.e. contract inert. Set it to opt the theme in (added 2026-07-28) |
+| `--article-padding-top` | `var(--spacing-lg, 2.5rem)` | Space above the header |
+| `--article-padding-bottom` | `var(--spacing-lg, 2.5rem)` | Space below the body (added 2026-07-27) |
+| `--article-media-radius` | `8px` | Corner radius on embedded iframe/embed |
+| `--article-media-margin` | `1.5rem` | Space below an embed |
+| `--article-video-ratio` | `16 / 9` | Aspect ratio for YouTube / Vimeo embeds |
+| `--article-table-size` | `0.9rem` | In-body table font size |
+| `--article-table-cell-padding` | `10px 14px` | Table cell padding |
+| `--article-strong-weight` | `600` | `**strong**` weight in body copy |
+| `--article-banner-size` | `0.9rem` | Shape `banner_text` size |
 
 **Theme contract:** optional. Set in the theme's `main.css` `:root`. Full guidance and a worked
 example (alter-engineers) are in `themes.md` → "Article-shape sizing tokens".
+
+---
+
+### Article-shape per-page settings (`::: settings` block)
+
+Authored in a `::: settings` block in the page body, not in frontmatter — see
+`shapes.md` → "The `shape_settings` mechanism".
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `share_bar` | bool | `true` | `false` hides the Copy link / Embed bar |
+| `show_date_created` | bool | `true` | `false` hides the "Written on" pill (added 2026-07-27) |
+| `show_date_updated` | bool | `true` | `false` hides the "Updated on" pill (added 2026-07-27) |
+
+**Date authoring — two conventions, both supported** (`scripts/utils/date-field.js`):
+
+| Form | Example | Used by |
+|------|---------|---------|
+| Comma | `date_created: 2024-11-07, Published on` | marbles, alter-engineers |
+| Separate key | `date_created: 2024-11-07` + `date_created_text: Published on` | melt |
+| List | `date_updated:` with a `- YYYY-MM-DD` list | melt — **latest entry wins**, not first |
 
 ---
 
@@ -398,6 +458,17 @@ Settings that apply to specific visualizers regardless of theme.
 | `quotes[].name` | string | — | Speaker name |
 | `quotes[].date` | string | — | Display date |
 | `quotes[].color` | string | — | Card color variant (`red`, `white`, `green`) |
+
+### `collection` code fence
+
+Full reference: `lib/visualizers/collection/schema.md`. Settings added since:
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `placeholder` | string | `Search...` | Placeholder text for the collection's own filter input (added 2026-07-27) |
+
+The filter input reads the shared `--sv-*` search-surface tokens, so it matches the
+site-wide Pagefind bar in whatever theme is active.
 
 ### `folder-preview` code fence
 
@@ -477,6 +548,7 @@ No theme-specific page-level settings beyond the universal contract.
 | `date_created_text` | string | `Written on` | `layouts/page.njk` | Custom label for the creation-date pill. |
 | `date_updated` | list of strings | — | `layouts/page.njk` | Renders an "updated" pill from the most recent entry. Hidden when the latest update matches `date_created`. See universal `date_updated`. |
 | `date_updated_text` | string | `Updated on` | `layouts/page.njk` | Custom label for the updated-date pill. |
+| `subtitle` | string | — | `layouts/home.njk` | Homepage tagline under the logo. Falls back to `site.description` from `_bloob-settings.md`. The homepage `title:` also feeds the tab/og title (preferred over `site.title` on `/`). |
 
 ---
 

@@ -30,6 +30,11 @@ import {
   copyAttachments,
   extractFirstImage,
 } from "./utils/attachment-resolver.js";
+import {
+  resolveFolderIndexTemplate,
+  renderFolderIndexTemplate,
+  folderDisplayName,
+} from "./utils/folder-index-template.js";
 import { handleTransclusions } from "./utils/transclusion-handler.js";
 import { stripComments } from "./utils/comment-stripper.js";
 import { stripLeadingTitleHeading, stripInlineMarkdown } from "./utils/title-deduplicator.js";
@@ -37,6 +42,8 @@ import { injectContainerRaw } from "./utils/inject-container-raw.js";
 import { extractSettingsBlock } from "./utils/extract-settings-block.js";
 import { getLastModifiedDate } from "./utils/git-date-extractor.js";
 import { stripDatePrefix } from "./utils/date-prefix.js";
+import { smartTitleCase } from "./utils/smart-title-case.js";
+import { slugifyPath } from "./utils/slug-strategy.js";
 import { extractTags, buildTagIndex } from "./utils/tag-extractor.js";
 import { buildGraph } from "./utils/graph-builder.js";
 import { resolveRedirect } from "./utils/redirect-resolver.js";
@@ -275,6 +282,12 @@ export async function preprocessContent({
     });
     processedContent = transclusionResult.content;
     stats.transclusions += transclusionResult.transclusions.length;
+
+    // 6b.5: Capture the PRE-resolution raw of scene-nav blocks (before link resolution
+    // rewrites note.md → /url/). Emitted as data-vis-raw-source so the scene-nav builder
+    // can round-trip the authored, un-resolved refs. scene-nav only — inert for all other
+    // shapes/sites (opener never gets _rawsource, container renderer emits nothing).
+    processedContent = injectContainerRaw(processedContent, { attr: "_rawsource", onlyShape: "scene-nav" });
 
     // 6c: Resolve attachments (images, embeds, HTML files)
     const attachmentResult = resolveAttachments(
@@ -568,8 +581,16 @@ export async function preprocessContent({
       ["index", "_index"].includes(path.basename(file.relativePath, ".md"));
     if (isIndexFile && BUILD_TARGET === "eleventy") {
       const dir = path.dirname(file.relativePath);
-      const permalink =
-        dir === "." ? "/" : "/" + dir.replace(/\\/g, "/") + "/";
+      // The file index is the single source of truth for URLs, so prefer the URL
+      // it already computed for this page. The slugifyPath fallback covers pages
+      // missing from the index (e.g. drafts) and derives the same value anyway.
+      //
+      // This used to be `"/" + dir + "/"` — the raw directory name, bypassing the
+      // slug strategy. On a `case: lower` site that pinned the folder index at
+      // "/Resources/" while its children lived under "/resources/", which macOS's
+      // case-insensitive filesystem silently merged and Linux CI would not.
+      const permalink = pageInfo?.url
+        ?? (dir === "." ? "/" : "/" + slugifyPath(dir, slugStrategy) + "/");
       outputFrontmatter.permalink = permalink;
       if (!hasEleventyLayout) {
         outputFrontmatter.layout = bloobObjectLayout ?? bloobShapeLayout ?? shapeManifestLayout ?? "layouts/base.njk";
@@ -586,10 +607,7 @@ export async function preprocessContent({
         // "My Title" (set via file-index-builder) and we must not overwrite it.
         const filenameStem = path.basename(file.relativePath, ".md");
         if (pageTitle === filenameStem) {
-          const folderDisplay = folderSlug
-            .split(/[-_\s]+/)
-            .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-            .join(" ");
+          const folderDisplay = smartTitleCase(folderSlug);
           outputFrontmatter.title = folderDisplay;
           outputFrontmatter.folder_display = folderDisplay;
         }
@@ -701,6 +719,20 @@ export async function preprocessContent({
     `[tags] Wrote ${Object.keys(tagIndex).length} tags to tagIndex.json (${stats.tagsExtracted} total tag references)`,
   );
 
+  // Persist the attachment index (basename/vault-path → resolved URL) as build data.
+  // Shapes that carry their own image refs (e.g. scene-nav, whose markdown-link images
+  // the general resolver skips) read this at render to resolve refs themselves. Written
+  // to _data so it is build data, not a served file.
+  const attachmentIndexPath = path.join(tagIndexDir, "attachmentIndex.json");
+  await fs.writeJson(
+    attachmentIndexPath,
+    { byBasename: attachmentIndex.byBasename || {}, byVaultPath: attachmentIndex.byVaultPath || {} },
+    { spaces: 0 },
+  );
+  console.log(
+    `[attachments] Wrote attachmentIndex.json (${Object.keys(attachmentIndex.byBasename || {}).length} basenames)`,
+  );
+
   // Step 8: Build and write graph.json + run visualizer preprocess hooks
   console.log("\n--- Step 8: Building graph data + visualizer hooks ---");
   const graphData = buildGraph(perPageLinks, tagIndex);
@@ -768,6 +800,21 @@ export async function preprocessContent({
   // and takes priority — we skip stub generation for that folder.
   console.log("\n--- Step 9.5: Generating folder index stubs ---");
   const SKIP_DIRS = new Set(["media", "assets", "tags", "pagefind", "og", "search"]);
+
+  // Resolved once: theme override wins over _base. Read up-front so a missing
+  // template is reported once rather than per folder.
+  const folderIndexTemplatePath = resolveFolderIndexTemplate(
+    path.join(ROOT_DIR, "themes"),
+    siteConfig.theme,
+  );
+  const folderIndexTemplate = folderIndexTemplatePath
+    ? await fs.readFile(folderIndexTemplatePath, "utf-8")
+    : null;
+  if (folderIndexTemplatePath) {
+    console.log(
+      `[folder-index] Template: ${path.relative(ROOT_DIR, folderIndexTemplatePath)}`,
+    );
+  }
   try {
     const entries = await fs.readdir(outputDir, { withFileTypes: true });
 
@@ -801,29 +848,41 @@ export async function preprocessContent({
         continue;
       }
 
-      // Display name: capitalise each word
-      const folderDisplay = folderSlug
-        .split(/[-_\s]+/)
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(" ");
+      // Display name comes from the ORIGINAL folder name, never the slug, so
+      // acronyms survive on `case: lower` sites ("come-to-MELT" → "Come to MELT").
+      const folderDisplay = folderDisplayName(folderSlug);
 
-      // Stub bypasses the preprocessor's Step 6 (it's written directly to src-*/).
-      // All frontmatter that Step 6 would auto-inject for user-written index.md files
-      // must be baked in here. The bloob-shape is declared for documentation/tooling;
-      // renderFilescope() does not run on stubs — the container div is inlined directly.
-      const stub = [
-        "---",
-        `bloob-shape: folder-preview`,
-        `layout: layouts/folder-index.njk`,
-        `permalink: /${folderSlug}/`,
-        `folder: ${folderSlug}`,
-        `title: ${folderDisplay}`,
-        `folder_display: ${folderDisplay}`,
-        "---",
-        "",
-        `<div class="folder-preview-visualizer" data-pagefind-ignore data-fp-settings='{}'></div>`,
-        "",
-      ].join("\n");
+      // `folderSlug` is the on-disk directory name and stays that way for
+      // filesystem paths — but EVERY value the template interpolates is either a
+      // URL or a graph lookup key, so `slug` must go through the site's slug
+      // strategy first. This is exactly the trap folder-index-template.js's
+      // header warns about, from both ends:
+      //   - `source: folder=Resources` matches nothing, silently, because
+      //     graph.json's `section` is slugified
+      //   - `permalink: /Resources/` puts a folder index at a different path
+      //     from its own children on a case-sensitive filesystem
+      const folderUrlPath = slugifyPath(folderSlug, slugStrategy);
+
+      // The stub body comes from a markdown TEMPLATE that composes a shape —
+      // themes/<theme>/templates/folder-index.md, else themes/_base/. It used
+      // to be a hard-coded HTML string containing folder-preview's container
+      // div, which opted folder indexes out of the shape system and duplicated
+      // markup owned by a stylesheet elsewhere.
+      //
+      // Placeholders are substituted here, at generation time, so the slug is
+      // baked in before Eleventy sees the file. Stubs bypass Step 6, so the
+      // template carries every frontmatter key Step 6 would have injected.
+      if (!folderIndexTemplate) {
+        console.warn(
+          `[folder-index] No folder-index template found — skipping stub for /${folderSlug}/`,
+        );
+        continue;
+      }
+
+      const stub = renderFolderIndexTemplate(folderIndexTemplate, {
+        slug: folderUrlPath,
+        folder_display: folderDisplay,
+      });
 
       await fs.writeFile(indexPath, stub, "utf-8");
       console.log(`[folder-index] Generated stub for /${folderSlug}/`);

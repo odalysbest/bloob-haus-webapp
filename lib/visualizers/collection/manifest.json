@@ -7,8 +7,14 @@
     "method": "code-fence",
     "language": "collection"
   },
+  "width": "wide",
   "files": {
     "js": "browser.js",
     "css": "styles.css"
+  },
+  "detect": {
+    "selectors": [
+      ".collection-visualizer"
+    ]
   }
 }

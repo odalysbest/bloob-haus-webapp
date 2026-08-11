@@ -13,7 +13,13 @@ import {
   resolveSiteName,
 } from "./scripts/utils/config-loader.js";
 import { formatDate } from "./scripts/utils/format-date.js";
+import { parseDateField, resolveDateLabel } from "./scripts/utils/date-field.js";
 import { derivePageId } from "./scripts/utils/page-id.js";
+import { smartTitleCase } from "./scripts/utils/smart-title-case.js";
+import {
+  detectVisualizers,
+  renderAssetTags,
+} from "./scripts/utils/visualizer-detection.js";
 
 // Auto-discover magic machines from lib/magic-machines/
 // Each machine needs a manifest.json with a "route" field and an app.entry path.
@@ -190,10 +196,19 @@ export default async function (eleventyConfig) {
           ? ` data-vis-raw="${rawBase64}"`
           : "";
 
+        // _rawsource is the optional PRE-resolution capture (scene-nav only) — lets a
+        // shape's builder round-trip authored, un-resolved refs. Additive; only present
+        // when inject-container-raw injected it.
+        const rawSourceBase64 = settings._rawsource;
+        delete settings._rawsource;
+        const rawSourceAttr = rawSourceBase64
+          ? ` data-vis-raw-source="${rawSourceBase64}"`
+          : "";
+
         const settingsAttr = Object.keys(settings).length
           ? ` data-vis-settings='${JSON.stringify(settings)}'`
           : "";
-        return `<section class="${cls}"${settingsAttr}${rawAttr}>\n`;
+        return `<section class="${cls}"${settingsAttr}${rawAttr}${rawSourceAttr}>\n`;
       },
     });
   });
@@ -202,6 +217,16 @@ export default async function (eleventyConfig) {
   // Handles Date objects, YYYY-MM-DD strings, and arrays (e.g. `date_updated`,
   // for which the most recent entry is shown regardless of list order).
   eleventyConfig.addFilter("dateFormat", formatDate);
+
+  // Date pills accept two authoring conventions and layouts must honour both:
+  //   comma form      date_created: 2024-11-07, Published on
+  //   separate key    date_created: 2024-11-07  +  date_created_text: Published on
+  // Lists (melt's `date_updated:`) resolve to their LATEST entry.
+  // `dateValue` returns the date part; `dateLabel` picks *_text > inline > default.
+  eleventyConfig.addFilter("dateValue", (raw) => parseDateField(raw).value);
+  eleventyConfig.addFilter("dateInlineLabel", (raw) => parseDateField(raw).label);
+  eleventyConfig.addFilter("dateLabel", (raw, explicitText, fallback) =>
+    resolveDateLabel(explicitText, parseDateField(raw).label, fallback));
 
   // Truncate filter (Hugo has this built-in)
   eleventyConfig.addFilter("truncate", function (str, len) {
@@ -248,36 +273,25 @@ export default async function (eleventyConfig) {
   });
 
   // Title case filter — matches Hugo's .Title behavior (lowercase small words)
-  // Also converts hyphens to spaces for slugified strings
-  eleventyConfig.addFilter("titleCase", function (str) {
-    if (!str) return "";
-    const small = new Set([
-      "a",
-      "an",
-      "and",
-      "as",
-      "at",
-      "but",
-      "by",
-      "for",
-      "in",
-      "nor",
-      "of",
-      "on",
-      "or",
-      "so",
-      "the",
-      "to",
-      "up",
-    ]);
-    return str
-      .replace(/-/g, " ")
-      .split(" ")
-      .map((word, i) => {
-        if (i > 0 && small.has(word.toLowerCase())) return word.toLowerCase();
-        return word.charAt(0).toUpperCase() + word.slice(1);
-      })
-      .join(" ");
+  // Also converts hyphens/underscores to spaces for slugified strings.
+  // Delegates to the shared util so templates and the preprocessor agree.
+  eleventyConfig.addFilter("titleCase", smartTitleCase);
+
+  // Look up a page in a collection by URL, case-insensitively.
+  //
+  // Used by breadcrumbs to resolve an ancestor folder's real title instead of
+  // prettifying its URL slug — a slug can't recover an acronym on a site with
+  // `case: lower`.
+  //
+  // The match ignores case deliberately. Folder-index permalinks and leaf-page
+  // URLs now agree (both go through slugifyPath), but a preserve-case site can
+  // still be reached at a different casing than it was generated with, and a
+  // silently-null lookup would drop the crumb rather than fail loudly.
+  // Returns null when nothing matches; callers fall back to the slug.
+  eleventyConfig.addFilter("lookupPage", function (collection, url) {
+    if (!collection || !url) return null;
+    const target = String(url).toLowerCase();
+    return collection.find((p) => String(p.url || "").toLowerCase() === target) || null;
   });
 
   // Filter out system/reserved tags from display
@@ -673,7 +687,10 @@ export default async function (eleventyConfig) {
 
       let result = content;
       for (const viz of buildTimeVisualizers) {
-        result = viz.transform(result, { siteConfig });
+        // pageUrl lets a visualizer exclude the page it is rendered on from its
+        // own listing (collection does this). Additive — visualizers that
+        // ignore it are unaffected.
+        result = viz.transform(result, { siteConfig, pageUrl: this.page.url });
       }
       return result;
     });
@@ -687,6 +704,75 @@ export default async function (eleventyConfig) {
 
   if (mountPath) {
     console.log(`[eleventy] Mount path: /${mountPath}/ → output to ${outputDir}`);
+  }
+
+  // ── Per-page visualizer assets (TECH-DEBT #4) ───────────────────────────────
+  // Theme partials emit <!--bloob:visualizer-css--> / <!--bloob:visualizer-js-->
+  // instead of looping over every visualizer. This transform fills those markers
+  // with only the assets the rendered page actually needs.
+  //
+  // Registered AFTER the "visualizers" transform on purpose: detection reads the
+  // finished HTML, so shape containers must already exist. Because it inspects
+  // output rather than predicting from source, it works for every activation
+  // route — code fence, ::: container, bloob-shape frontmatter, or a theme
+  // partial that drops a shape into the nav or footer.
+  //
+  // Disabled (the default) reproduces today's behavior exactly: every asset on
+  // every page. A shape is only ever skipped when its manifest declares
+  // `detect.selectors`; see scripts/utils/visualizer-detection.js.
+  {
+    const perPageEnabled = siteConfig.features?.per_page_visualizers === true;
+
+    // visualizers.json is written by bundle-visualizers.js before Eleventy runs.
+    let visualizerData = [];
+    const visDataPath = join(process.env.SRC_DIR || "src", "_data", "visualizers.json");
+    try {
+      visualizerData = JSON.parse(readFileSync(visDataPath, "utf-8"));
+    } catch {
+      console.warn(
+        `[eleventy] visualizers.json not readable at ${visDataPath} — visualizer asset tags will be empty`,
+      );
+    }
+
+    const savings = { pages: 0, cssSkipped: 0, jsSkipped: 0 };
+
+    eleventyConfig.addTransform("visualizer-assets", function (content) {
+      if (!this.page.outputPath?.endsWith(".html")) return content;
+      if (!content.includes("<!--bloob:visualizer-")) return content;
+
+      const { css, js, skipped } = detectVisualizers(visualizerData, content, {
+        enabled: perPageEnabled,
+      });
+      const tags = renderAssetTags(css, js, pathPrefix);
+
+      if (perPageEnabled && skipped.length) {
+        savings.pages += 1;
+        for (const name of skipped) {
+          const vis = visualizerData.find((v) => v.name === name);
+          if (vis?.hasCss) savings.cssSkipped += 1;
+          if (vis?.hasJs) savings.jsSkipped += 1;
+        }
+      }
+
+      return content
+        .replace("<!--bloob:visualizer-css-->", tags.css)
+        .replace("<!--bloob:visualizer-js-->", tags.js);
+    });
+
+    eleventyConfig.on("eleventy.after", () => {
+      if (!perPageEnabled) {
+        console.log("[visualizer-assets] per-page loading OFF — every page loads every visualizer");
+        return;
+      }
+      const annotated = visualizerData.filter((v) => v.detect && !v.detect.always).length;
+      const always = visualizerData.filter((v) => v.detect?.always).length;
+      const unannotated = visualizerData.filter((v) => (v.hasCss || v.hasJs) && !v.detect).length;
+      console.log(
+        `[visualizer-assets] per-page loading ON — skipped ${savings.cssSkipped} CSS + ` +
+          `${savings.jsSkipped} JS requests across ${savings.pages} page(s). ` +
+          `${annotated} shape(s) detectable, ${always} always-on, ${unannotated} unannotated (always loaded).`,
+      );
+    });
   }
 
   // Run pagefind after every build (dev and prod) so search index is always current.

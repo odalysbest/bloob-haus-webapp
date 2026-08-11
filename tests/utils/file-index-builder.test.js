@@ -77,12 +77,36 @@ describe('buildFileIndex', () => {
       expect(page.title).toBe('My Cake Recipe');
     });
 
-    it('falls back to filename when no title or heading', async () => {
+    it('falls back to a prettified filename when no title or heading', async () => {
       const index = await writeAndIndex([
         makeFile('recipes/cake.md', '---\n---\nJust content'),
       ]);
       const page = Object.values(index.pages)[0];
-      expect(page.title).toBe('cake');
+      expect(page.title).toBe('Cake');
+    });
+
+    it('deslugifies and smart-cases a hyphenated filename fallback', async () => {
+      const index = await writeAndIndex([
+        makeFile('recipes/how-to-melt.md', '---\n---\nJust content'),
+      ]);
+      const page = Object.values(index.pages)[0];
+      expect(page.title).toBe('How to Melt');
+    });
+
+    it('preserves acronym casing in a filename fallback', async () => {
+      const index = await writeAndIndex([
+        makeFile('recipes/come-to-MELT.md', '---\n---\nJust content'),
+      ]);
+      const page = Object.values(index.pages)[0];
+      expect(page.title).toBe('Come to MELT');
+    });
+
+    it('still resolves wiki-links written against the raw filename', async () => {
+      const index = await writeAndIndex([
+        makeFile('recipes/come-to-MELT.md', '---\n---\nJust content'),
+      ]);
+      // The title changed, but filenameLookup must keep the on-disk name working.
+      expect(index.filenameLookup['come-to-melt']).toBeDefined();
     });
   });
 
@@ -224,6 +248,51 @@ describe('resolveLink', () => {
   it('is case-insensitive for title lookup', () => {
     const result = resolveLink('challah bread', index);
     expect(result.found).toBe(true);
+  });
+});
+
+describe('folder-index link resolution (_index and index spellings)', () => {
+  let tmpDir;
+  let index;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'folder-index-'));
+    // One folder index on disk as _index.md (Obsidian), one as index.md (Jekyll).
+    const files = [
+      { relativePath: 'Resources/_index.md', content: '---\n---\n# Resources' },
+      { relativePath: 'Playlists/index.md', content: '---\n---\n# Playlists' },
+    ];
+    const publishedFiles = [];
+    for (const f of files) {
+      const fullPath = path.join(tmpDir, f.relativePath);
+      await fs.ensureDir(path.dirname(fullPath));
+      await fs.writeFile(fullPath, f.content);
+      publishedFiles.push({ path: fullPath, relativePath: f.relativePath });
+    }
+    index = await buildFileIndex(publishedFiles, tmpDir);
+  });
+
+  afterEach(async () => {
+    await fs.remove(tmpDir);
+  });
+
+  it('resolves a folder link written with the _index.md spelling', () => {
+    const result = resolveLink('Resources/_index.md', index);
+    expect(result.found).toBe(true);
+    expect(result.url).toBe('/resources/');
+  });
+
+  it('resolves a folder link written with the index.md spelling', () => {
+    const result = resolveLink('Playlists/index.md', index);
+    expect(result.found).toBe(true);
+    expect(result.url).toBe('/playlists/');
+  });
+
+  it('resolves either spelling regardless of the on-disk index filename', () => {
+    // Link spelling should not have to match the on-disk file: both index.md and
+    // _index.md alias to the same folder page.
+    expect(resolveLink('Resources/index.md', index).url).toBe('/resources/');
+    expect(resolveLink('Playlists/_index.md', index).url).toBe('/playlists/');
   });
 });
 
