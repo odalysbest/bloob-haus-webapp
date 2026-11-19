@@ -14,6 +14,16 @@ Newest entries at the top.
 
 ---
 
+## 2026-11-18 — `npm run dev:odalys` dies with EMFILE (Linux inotify instance cap)
+The dev server failed with only `❌ Dev failed: Command failed: npx concurrently ...`. The real
+cause was buried hundreds of lines up: `EMFILE: too many open files, watch ...` from Eleventy's
+chokidar watcher. It was **not** the open-file ulimit (1M) and not the watch count (360 / 65536). It was
+Linux's `fs.inotify.max_user_instances`, which defaults to **128**, and my desktop apps (Obsidian, KDE,
+Signal, Zoom...) already held 124. Fix: `sudo sysctl fs.inotify.max_user_instances=1024` (persisted in
+`/etc/sysctl.d/`). Separately, the `[watch]` theme watcher still crashes on Node 18 (entry below,
+08-10), which adds noise. **Suggestion:** `dev-local.js` could catch EMFILE/ENOSPC and print the sysctl
+hint instead of the generic "Command failed". Linux-only, so it's probably invisible on macOS.
+
 ## 2026-11-18 — second upstream pull (170 commits), theme-fork drift, two publish-safety surprises
 Merged `upstream/main` again (7 ahead / 170 behind). Zero merge conflicts, deploy workflow survived.
 Afterward 2 tests failed, and both were exactly the drift the August fork note predicted: upstream moved
