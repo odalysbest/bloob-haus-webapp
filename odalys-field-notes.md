@@ -14,6 +14,18 @@ Newest entries at the top.
 
 ---
 
+## 2026-11-19 — attachments fix (PR), and one typo in a note kills the whole build
+Built `features.referenced_attachments_only` (default off) and opened it as a PR. On my vault it
+copies 14 of 239 attachments, exactly the images my published notes show, and 0 links break. It's
+turned on in `sites/odalys.yaml`.
+
+While testing, the build died with only `❌ Dev failed: can not read a block mapping entry; a multiline
+key may not be an implicit key at line 5, column 1`. **No filename.** The cause was a missing space
+in my homepage's frontmatter (`subtitle:work in progress.`). Finding it took a script that parsed every
+note. Two suggestions: (1) the YAML error should name the note, and (2) for a *private* note, a
+parse error probably shouldn't stop the build at all. Warning and skipping would be safer, and
+skipping is also the safe direction in allowlist mode.
+
 ## 2026-11-18 — `npm run dev:odalys` dies with EMFILE (Linux inotify instance cap)
 The dev server failed with only `❌ Dev failed: Command failed: npx concurrently ...`. The real
 cause was buried hundreds of lines up: `EMFILE: too many open files, watch ...` from Eleventy's
