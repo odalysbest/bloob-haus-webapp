@@ -41,10 +41,11 @@ import { stripLeadingTitleHeading, stripInlineMarkdown } from "./utils/title-ded
 import { injectContainerRaw } from "./utils/inject-container-raw.js";
 import { extractSettingsBlock } from "./utils/extract-settings-block.js";
 import { getLastModifiedDate } from "./utils/git-date-extractor.js";
-import { stripDatePrefix } from "./utils/date-prefix.js";
+import { stripDatePrefix, resolveDatePrefixMode } from "./utils/date-prefix.js";
+import { buildDateRedirects } from "./utils/date-redirects.js";
 import { smartTitleCase } from "./utils/smart-title-case.js";
 import { slugifyPath } from "./utils/slug-strategy.js";
-import { extractTags, buildTagIndex } from "./utils/tag-extractor.js";
+import { extractTags, yamlTags, buildTagIndex } from "./utils/tag-extractor.js";
 import { buildGraph } from "./utils/graph-builder.js";
 import { resolveRedirect } from "./utils/redirect-resolver.js";
 import {
@@ -53,6 +54,15 @@ import {
   resolveIdentityKey,
   parseObjectImageField,
 } from "./utils/bloob-objects-reader.js";
+import { safeDecode } from "./utils/safe-decode.js";
+import { extractExcerpt } from "./utils/page-excerpt.js";
+import { pageShape, loadTemplateShapes, themeSupportsObjects, templateShapeLayout } from "./utils/template-shapes.js";
+import { dropHausStampedKeys } from "./utils/haus-stamped.js";
+import { catalogFields } from "./utils/catalog-fields.js";
+import { cleanMarkdownForSharing } from "./utils/share-markdown.js";
+import { resolveAttachmentPath } from "./utils/attachment-resolver.js";
+import { isPageUnlisted, isInUnlistedFolder } from "./utils/unlisted-folders.js";
+import { buildSeoDescription } from "./utils/seo-description.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -137,6 +147,11 @@ export async function preprocessContent({
   // Collect per-page outgoing links for graph.json (built after file loop)
   const perPageLinks = {};
 
+  // Per-page card text (excerpt, date, tags) for collection post cards.
+  // Build data only (_data/pagePreviews.json): kept out of graph.json, which is
+  // public and fetched by every graph view.
+  const pagePreviews = {};
+
   // Step 1: Read Obsidian config
   console.log("--- Step 1: Reading Obsidian config ---");
   const obsidianConfig = await readObsidianConfig(contentDir);
@@ -146,6 +161,10 @@ export async function preprocessContent({
   // not from env vars that may not be set (e.g. during `npm run dev:*`).
   const siteName = resolveSiteName();
   const siteConfig = await loadSiteConfig(siteName, { contentDir });
+  // Template shapes (lib/visualizers/*/manifest.json "format": "template") are drawn by the engine.
+  // Without their own layout.njk they only come alive on a theme with objects: true.
+  const templateShapes = await loadTemplateShapes(path.join(ROOT_DIR, "lib/visualizers"));
+  const themeHasObjects = themeSupportsObjects(siteConfig, ROOT_DIR);
   const publishOptions = {
     ...(siteConfig.content?.publish_mode && { publishMode: siteConfig.content.publish_mode }),
     ...(siteConfig.content?.blocklist_tag && { blocklistTag: siteConfig.content.blocklist_tag }),
@@ -153,6 +172,15 @@ export async function preprocessContent({
     ...(siteConfig.content?.status_field && { statusField: siteConfig.content.status_field }),
     ...(siteConfig.content?.publish_by_default !== undefined && { publishByDefault: siteConfig.content.publish_by_default }),
   };
+
+  // unlisted_folders: every page inside them is unlisted. Warn about a folder that doesn't
+  // exist, so a typo doesn't silently protect nothing.
+  const unlistedFolders = siteConfig.unlisted_folders || [];
+  for (const folder of unlistedFolders) {
+    if (!(await fs.pathExists(path.join(contentDir, folder)))) {
+      console.warn(`[process] ⚠️  unlisted_folders: "${folder}" does not exist in the vault`);
+    }
+  }
 
   // Step 2: Filter publishable files
   console.log("\n--- Step 2: Filtering publishable files ---");
@@ -181,13 +209,12 @@ export async function preprocessContent({
   // Step 3: Build file index
   console.log("\n--- Step 3: Building file index ---");
   const slugStrategy = process.env.SLUG_STRATEGY || "slugify";
-  // Jekyll-style date-prefixed filenames — two independent opt-in behaviors:
-  //   date_from_filename: a leading YYYY-MM-DD- supplies date_created when
-  //     frontmatter omits one; the prefix STAYS in the URL slug.
-  //   date_prefix_slugs: strip that prefix from the URL slug (clean URLs).
-  // A site can enable either, both, or neither.
-  const dateFromFilename = siteConfig.features?.date_from_filename === true;
-  const datePrefixSlugs = siteConfig.features?.date_prefix_slugs === true;
+  // Date-prefixed filenames ("2026-06-24-my-post", "2026-06-24 My Post"):
+  //   - the date always fills a missing date_created (universal, below)
+  //   - url.date_prefix decides whether it stays in the URL: keep | strip (default)
+  //   - url.date_redirect (on by default) redirects the other form of the URL
+  const datePrefixSlugs = resolveDatePrefixMode(siteConfig.features) === "strip";
+  const dateRedirectsOn = siteConfig.features?.date_redirects !== false;
   // In status_field mode, draft files are excluded from publishing but their URLs
   // are stable and should resolve when referenced via wiki-links (e.g. card-preview).
   // In blocklist/allowlist modes, excluded files are private and must not be indexed.
@@ -248,12 +275,19 @@ export async function preprocessContent({
   // Step 6: Process each file
   console.log("\n--- Step 6: Processing markdown files ---");
 
+  // Every marble the engine draws, for the bake (scripts/bake-marbles.js), listed or not.
+  const marblePictures = [];
+  // Notes that are published, by name: "copy markdown" keeps links only to these.
+  const publishedSlugs = new Set(published.map((f) => path.basename(f.relativePath, ".md").toLowerCase()));
   for (const file of published) {
     console.log(`\n[process] ${file.relativePath}`);
 
     // Read file content
     const rawContent = await fs.readFile(file.path, "utf-8");
-    const { data: frontmatter, content: body } = matter(rawContent);
+    const { data: authoredFrontmatter, content: body } = matter(rawContent);
+    // Names only the haus may write (opened, fetched, date_postmarked, mark_*) never come from a note.
+    const { frontmatter, dropped: stampedKeys } = dropHausStampedKeys(authoredFrontmatter);
+    if (stampedKeys.length) console.warn(`[process] ignored haus-only keys: ${stampedKeys.join(", ")}`);
 
     // Process content through each resolver
     let processedContent = body;
@@ -261,16 +295,10 @@ export async function preprocessContent({
     // 6a: Strip comments (Obsidian %% ... %% and HTML <!-- ... -->)
     processedContent = stripComments(processedContent);
 
-    // 6b.pre: Normalize markdown-link-style transclusions → wiki-link style.
-    // Obsidian's "Use markdown links" mode writes ![alt](page.md) for page embeds.
-    // .md is unambiguous — no image has that extension — so rewrite before the
-    // transclusion handler runs. Strip the extension; the handler does its own lookup.
-    processedContent = processedContent.replace(
-      /!\[([^\]]*)\]\(([^)]+\.md)\)/g,
-      (_, _alt, src) => `![[${path.basename(src, ".md")}]]`
-    );
-
-    // 6b: Handle transclusions first (before other ![[]] patterns)
+    // 6b: Handle transclusions first (before other ![[]] patterns).
+    // Markdown-link-style embeds — ![alt](page.md), written by Obsidian's
+    // "Use [[Wikilinks]]: off" mode — are normalized inside the handler, so they
+    // expand identically to ![[page]], nested embeds included.
     const currentFilename = path.basename(file.relativePath, ".md");
     const currentSlug = fileIndex.filenameLookup[currentFilename.toLowerCase()] || null;
     // Site-wide default from features.transclusion_indicators; per-page frontmatter overrides.
@@ -327,7 +355,13 @@ export async function preprocessContent({
     // bloobShape   = explicitly declared shape (drives body rendering + settings extraction)
     // effectiveShape = bloobShape ?? site default (drives layout selection only)
     const bloobShape = frontmatter["bloob-shape"] || null;
-    const effectiveShape = bloobShape || siteConfig.default_shape || null;
+    const effectiveShape = pageShape({
+      bloobShape,
+      defaultShape: siteConfig.default_shape,
+      relativePath: file.relativePath,
+      objects: themeHasObjects,
+      templateShapes,
+    });
     let shapeSettings = {};
     if (bloobShape) {
       const extracted = extractSettingsBlock(processedContent);
@@ -358,7 +392,11 @@ export async function preprocessContent({
     //   b) Layout shape — shape has no renderFilescope (or no index.js at all).
     //      Treated as a layout reference: layouts/[name].njk wraps the page as chrome.
     let bloobShapeLayout = null;
-    if (effectiveShape) {
+    if (effectiveShape && templateShapes.has(effectiveShape)) {
+      bloobShapeLayout = templateShapeLayout(templateShapes.get(effectiveShape), { objects: themeHasObjects });
+      if (bloobShapeLayout) console.log(`[shape] "${effectiveShape}" is drawn by the engine → ${bloobShapeLayout}`);
+      else if (bloobShape) console.warn(`[shape] bloob-shape: "${effectiveShape}" needs a theme with objects — falling back to page.njk`);
+    } else if (effectiveShape) {
       const shapePath = path.join(ROOT_DIR, "lib/visualizers", effectiveShape, "index.js");
       if (await fs.pathExists(shapePath)) {
         try {
@@ -367,7 +405,9 @@ export async function preprocessContent({
             if (bloobShape) {
               // Only render body for explicitly declared shapes
               console.log(`[shape] Rendering file-scope shape: ${effectiveShape}`);
-              processedContent = await mod.renderFilescope(shapeSettings, processedContent);
+              // The frontmatter rides along as a third argument for a shape that draws from it (the
+              // letter's envelope); shapes that take two arguments are unaffected.
+              processedContent = await mod.renderFilescope(shapeSettings, processedContent, { frontmatter });
             }
             // Default shape with renderFilescope: layout is handled via shapeManifestLayout below
           } else {
@@ -415,11 +455,21 @@ export async function preprocessContent({
       frontmatter.title ||
       path.basename(file.relativePath, ".md");
 
+    // Normalize visibility into a single internal flag that templates, layouts, and
+    // eleventyComputed read: visibility: unlisted, website_status: unlisted, the #unlisted
+    // tag, or living inside an unlisted_folders folder (which wins over the page's own YAML).
+    const isUnlisted = isPageUnlisted({
+      frontmatter,
+      tags: pageTags,
+      relativePath: file.relativePath,
+      unlistedFolders,
+    });
+
     // 6g: Collect outgoing links for graph data (wiki-links + markdown links).
     // unlisted pages are excluded entirely — they must not appear in graph.json
     // or any runtime visualizer. archived/public pages carry website_status for
     // visualizers that need to filter them from listings.
-    if (pageInfo && frontmatter.website_status !== "unlisted") {
+    if (pageInfo && !isUnlisted) {
       const outgoing = [
         ...wikiLinkResult.resolved.map((r) => r.url),
         ...mdLinkResult.resolved.map((r) => r.url),
@@ -446,22 +496,21 @@ export async function preprocessContent({
       fileIndex,
     );
 
-    // Normalize visibility: unlisted, website_status: unlisted, or #unlisted tag
-    // into a single internal flag that templates, layouts, and eleventyComputed read.
-    const isUnlisted =
-      frontmatter.visibility === "unlisted" ||
-      frontmatter.website_status === "unlisted" ||
-      pageTags.some((t) => t === "unlisted" || t === "#unlisted");
-
     const outputFrontmatter = {
       ...frontmatter,
       title: pageTitle,
       slug: pageInfo?.slug,
       ...(pageInfo?.slug && { slug_spaced: pageInfo.slug.replace(/-/g, " ") }),
       tags: pageTags,
+      // The frontmatter's own tags (no inline #tags): the foot of the page shows these when the
+      // site links inline tags in place (features.inline_tag_links).
+      yaml_tags: yamlTags(frontmatter),
       ...(bloobObject && { bloob_object: bloobObject }),
       ...(resolvedRedirect && { redirect: resolvedRedirect }),
       ...(isUnlisted && { _bloob_unlisted: true }),
+      // The title is a name made from the filename, not one the writer gave (the note then opens
+      // without a heading; the tab, search and rooms still use the name).
+      ...(pageInfo?.titleFromFilename && !frontmatter.title && { title_from_filename: true }),
       // Expose :::settings block values to layout templates (e.g. share_bar toggle in article shape)
       ...(bloobShape && Object.keys(shapeSettings).length > 0 && { shape_settings: shapeSettings }),
     };
@@ -522,7 +571,7 @@ export async function preprocessContent({
     // Extract first image for OG preview
     const firstImage = extractFirstImage(processedContent);
     if (firstImage) {
-      const imgFilename = path.basename(decodeURIComponent(firstImage));
+      const imgFilename = path.basename(safeDecode(firstImage));
       const imgExt = path.extname(imgFilename).toLowerCase();
       const imgBase = imgFilename.replace(/\.[^.]+$/, "");
       // GIFs → first frame extracted as JPEG by generate-og-images.js
@@ -530,6 +579,8 @@ export async function preprocessContent({
       // encodeURIComponent the filename so URLs are valid (spaces → %20, @ → %40, etc.)
       // The OG generator writes files with the same encoding so names match on disk.
       outputFrontmatter.image = `/og/${encodeURIComponent(imgBase)}-og.${ogExt}`;
+      // Taken from the body, so it is inside data: a locked or sealed note may not show it outside.
+      outputFrontmatter.image_source = "body";
       // Also store image on the graph node for hover previews
       if (pageInfo && perPageLinks[pageInfo.url]) {
         perPageLinks[pageInfo.url].image = outputFrontmatter.image;
@@ -650,31 +701,38 @@ export async function preprocessContent({
       }
     }
 
+    // Head-only meta description (partials/seo-meta.njk): the author's description, else
+    // subtitle + first prose, else the site description. Never written into `description`.
+    outputFrontmatter.seo_description = buildSeoDescription({
+      description: frontmatter.description,
+      subtitle: outputFrontmatter.subtitle,
+      body: processedContent,
+      siteDescription: siteConfig.site?.description,
+    });
+
     // Also handle title_md for pages where frontmatter.title contains markdown
     // but no H1 was stripped (e.g. user wrote title: _Italic_ in frontmatter directly).
     if (!outputFrontmatter.title_md && pageInfo?.title_md) {
       outputFrontmatter.title_md = pageInfo.title_md;
     }
 
-    // Jekyll-style date prefix handling for a leading YYYY-MM-DD- on the filename.
-    // Two opt-in behaviors, both keyed off the date prefix:
+    // Date prefix on the filename (YYYY-MM-DD- or "YYYY-MM-DD ").
     const { date: filenameDate } = stripDatePrefix(path.basename(file.relativePath, ".md"));
 
-    //   date_from_filename: supply date_created when frontmatter omits one
-    //   (frontmatter always wins — this only fills a missing value).
-    if (dateFromFilename && filenameDate && outputFrontmatter.date_created == null) {
+    //   The filename date supplies date_created when frontmatter omits one —
+    //   universal Bloob Haus behavior (frontmatter always wins).
+    if (filenameDate && outputFrontmatter.date_created == null) {
       outputFrontmatter.date_created = filenameDate;
     }
 
     //   URL control: Eleventy NATIVELY strips a leading YYYY-MM-DD- from the
-    //   fileSlug/filePathStem (it treats the date as the page date), so by default
-    //   the date is dropped from the URL no matter what. To make that a real,
-    //   two-way setting we pin an explicit permalink to the index's computed URL
-    //   (which already honors date_prefix_slugs): off → keep the date in the URL,
-    //   on → strip it. Only for date-prefixed, non-index files on opt-in sites, so
-    //   default sites keep Eleventy's native behavior. This also keeps the served
-    //   URL identical to the one internal links resolve to (pageInfo.url).
-    if (filenameDate && (dateFromFilename || datePrefixSlugs)
+    //   fileSlug/filePathStem (it treats the date as the page date), so left alone
+    //   the date is dropped from the URL no matter what. We pin an explicit
+    //   permalink to the index's computed URL (which honors url.date_prefix:
+    //   keep/strip), so the setting really decides and the served URL is the
+    //   same one internal links resolve to (pageInfo.url). In strip mode this is
+    //   the URL Eleventy would have produced anyway.
+    if (filenameDate
         && pageInfo?.url && outputFrontmatter.permalink == null) {
       outputFrontmatter.permalink = pageInfo.url;
     }
@@ -691,6 +749,67 @@ export async function preprocessContent({
       outputFrontmatter.date_updated = outputFrontmatter.date_updated.map(toDateOnly);
     } else if (outputFrontmatter.date_updated != null) {
       outputFrontmatter.date_updated = toDateOnly(outputFrontmatter.date_updated);
+    }
+
+    // Card text for collection post cards. Same visibility rule as graph.json:
+    // unlisted pages are never listed, so they get no card text either.
+    if (pageInfo && !isUnlisted) {
+      const authored = frontmatter.excerpt || frontmatter.description;
+      const excerpt = authored ? String(authored).trim() : extractExcerpt(processedContent);
+      const dateMatch = /\d{4}-\d{2}-\d{2}/.exec(String(outputFrontmatter.date_created ?? ""));
+      const cardTags = pageTags.filter(
+        (t) => !["all", "nav", "posts", "not-for-public"].includes(String(t).toLowerCase()),
+      );
+      pagePreviews[pageInfo.url] = {
+        ...(excerpt && { excerpt }),
+        ...(dateMatch && { date: dateMatch[0] }),
+        ...(cardTags.length && { tags: cardTags }),
+      };
+      // Themes that draw objects get each page's kind and outside details in the catalog, so
+      // rooms can draw closed objects. Other themes' catalogs stay exactly as they were.
+      if (themeHasObjects && perPageLinks[pageInfo.url]) {
+        const fields = catalogFields({
+          effectiveShape,
+          frontmatter,
+          url: pageInfo.url,
+          fileName: path.basename(file.relativePath, ".md"),
+          excerpt,
+        });
+        Object.assign(perPageLinks[pageInfo.url], fields);
+      }
+    }
+
+    // Pictures a template shape names in its manifest ("images": ["front", "back"]) resolve to
+    // site addresses, like pictures in the body (next to the note first, then by name).
+    const shapeImages = bloobShapeLayout && templateShapes.get(effectiveShape)?.manifest?.images;
+    if (Array.isArray(shapeImages)) {
+      for (const key of shapeImages) {
+        if (!frontmatter[key]) continue;
+        const url = resolveAttachmentPath(String(frontmatter[key]), attachmentIndex, { sourceVaultPath: file.relativePath });
+        if (url) outputFrontmatter[key] = url;
+        else console.warn(`[shape] ${file.relativePath}: ${key}: "${frontmatter[key]}" was not found`);
+      }
+    }
+
+    // A marble drawn by the engine shows its baked picture and its color when closed, listed or
+    // not (an unlisted page is exactly the one shared by link); the bake reads this list.
+    if (themeHasObjects && pageInfo && bloobShapeLayout && effectiveShape === "marble") {
+      const outside = catalogFields({ effectiveShape, frontmatter, url: pageInfo.url, fileName: path.basename(file.relativePath, ".md") });
+      outputFrontmatter.closed_picture = outside.closedPicture;
+      outputFrontmatter.color = outside.color;
+      marblePictures.push({ id: pageInfo.url, image: outputFrontmatter.image, color: outside.color });
+    }
+
+    // An object that shares offers its note as markdown: written beside the page as source.md
+    // (src/_share/ is copied to the site as is, never read as a page).
+    if (themeHasObjects && pageInfo && bloobShapeLayout && templateShapes.get(effectiveShape)?.manifest?.shares) {
+      const sharePath = path.join(outputDir, "_share", pageInfo.url, "source.md");
+      await fs.outputFile(sharePath, cleanMarkdownForSharing(rawContent, {
+        publishedSlugs,
+        dates: { created: outputFrontmatter.date_created, updated: outputFrontmatter.date_updated },
+        siteUrl: siteConfig.site?.url,
+        resolveImage: (ref) => resolveAttachmentPath(ref, attachmentIndex, { sourceVaultPath: file.relativePath }),
+      }));
     }
 
     // Reconstruct the file with frontmatter
@@ -732,6 +851,13 @@ export async function preprocessContent({
   console.log(
     `[attachments] Wrote attachmentIndex.json (${Object.keys(attachmentIndex.byBasename || {}).length} basenames)`,
   );
+
+  if (themeHasObjects) await fs.outputJson(path.join(tagIndexDir, "marblePictures.json"), marblePictures);
+
+  // Card text for collection post cards (see pagePreviews above).
+  const pagePreviewsPath = path.join(tagIndexDir, "pagePreviews.json");
+  await fs.writeJson(pagePreviewsPath, pagePreviews, { spaces: 0 });
+  console.log(`[previews] Wrote pagePreviews.json (${Object.keys(pagePreviews).length} pages)`);
 
   // Step 8: Build and write graph.json + run visualizer preprocess hooks
   console.log("\n--- Step 8: Building graph data + visualizer hooks ---");
@@ -842,6 +968,13 @@ export async function preprocessContent({
       const folderContents = await fs.readdir(path.join(outputDir, folderSlug));
       if (folderContents.some((f) => (f.startsWith("index.") || f.startsWith("_index.")) && f !== "index.md" && f !== "_index.md")) continue;
 
+      // An unlisted_folders folder gets no index page at all: /clients/ answers 404 instead of
+      // announcing that the folder exists (security-by-obscurity.md, step 4).
+      if (isInUnlistedFolder(`${folderSlug}/`, unlistedFolders)) {
+        console.log(`[folder-index] Skipping stub for /${folderSlug}/ — unlisted_folders`);
+        continue;
+      }
+
       // Skip if a root-level file claims the same permalink slug (e.g. Notes.md → /notes/)
       if (rootFileSlugs.has(folderSlug.toLowerCase())) {
         console.log(`[folder-index] Skipping stub for /${folderSlug}/ — root file claims this slug`);
@@ -939,7 +1072,17 @@ export async function preprocessContent({
   }
   console.log("========================================\n");
 
-  return { ...stats, brokenLinkDetails };
+  // Date redirects (url.date_redirect, on by default): the other form of every
+  // date-prefixed URL → the real one. Written to _redirects after Eleventy builds
+  // (build-site.js / dev-local.js --build), since Eleventy owns the output folder.
+  const dateRedirects = dateRedirectsOn
+    ? buildDateRedirects(fileIndex.pages, { published: new Set(published.map((f) => f.relativePath)) })
+    : [];
+  if (dateRedirects.length) {
+    console.log(`[date-redirects] ${dateRedirects.length} date-prefixed URL redirect(s) queued for _redirects`);
+  }
+
+  return { ...stats, brokenLinkDetails, dateRedirects };
 }
 
 // Run directly if this is the main module

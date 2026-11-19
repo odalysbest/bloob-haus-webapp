@@ -11,6 +11,7 @@ import matter from "gray-matter";
 import { getSlugFunction, slugifyPath } from "./slug-strategy.js";
 import { stripDatePrefix } from "./date-prefix.js";
 import { smartTitleCase } from "./smart-title-case.js";
+import { safeDecode } from "./safe-decode.js";
 
 /**
  * Strips inline markdown from a heading string.
@@ -24,6 +25,14 @@ function stripInlineMarkdown(text) {
     .replace(/_(.+?)_/g, "$1")
     .replace(/`(.+?)`/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+}
+
+/**
+ * A heading's fold marker (`## > Title`, `## ^ Title`, see the foldable shape)
+ * is syntax, not part of the title. Only the heading fallback can carry one.
+ */
+function stripFoldMarker(text) {
+  return text.replace(/^[>^][ \t]*(?=\S)/, "");
 }
 
 /**
@@ -42,7 +51,7 @@ function extractTitle(frontmatter, content, filename) {
   // 2. First heading (# or ##) in content
   const headingMatch = content.match(/^#{1,2}\s+(.+)$/m);
   if (headingMatch) {
-    const raw = headingMatch[1].replace(/\s*\{#[^}]+\}\s*$/, "");
+    const raw = stripFoldMarker(headingMatch[1].replace(/\s*\{#[^}]+\}\s*$/, ""));
     return stripInlineMarkdown(raw).trim();
   }
 
@@ -61,7 +70,7 @@ function extractTitleMd(frontmatter, content, filename) {
   } else {
     const headingMatch = content.match(/^#{1,2}\s+(.+)$/m);
     if (headingMatch) {
-      raw = headingMatch[1].replace(/\s*\{#[^}]+\}\s*$/, "").trim();
+      raw = stripFoldMarker(headingMatch[1].replace(/\s*\{#[^}]+\}\s*$/, "").trim());
     } else {
       return null;
     }
@@ -132,7 +141,8 @@ export async function buildFileIndex(publishedFiles, contentDir, options = {}) {
     // slug and filename-derived title use the clean name ("my-post"), not
     // "2026-06-24-my-post". The original filename is still indexed below so
     // wiki-links written against the on-disk name keep resolving.
-    const slugBase = useDatePrefix ? stripDatePrefix(filename).name : filename;
+    const { date: filenameDate, name: undatedName } = stripDatePrefix(filename);
+    const slugBase = useDatePrefix ? undatedName : filename;
 
     // Last-resort display title when a file has neither `title:` nor an H1.
     // Prettified from the ORIGINAL filename (not the slug) so acronyms survive on
@@ -143,6 +153,10 @@ export async function buildFileIndex(publishedFiles, contentDir, options = {}) {
       : smartTitleCase(slugBase);
     const title = extractTitle(frontmatter, body, titleFallback);
     const titleMd = extractTitleMd(frontmatter, body, titleFallback);
+    // Neither `title:` nor a heading: the title is only a name made from the filename. Pages still
+    // need a name (the tab, search, links, rooms), but a shape may choose not to show it as a
+    // heading the writer never wrote (the note does).
+    const titleFromFilename = !frontmatter.title && !/^#{1,2}\s+(.+)$/m.test(body);
 
     // Build URL with folder prefix if in a subfolder.
     // slugifyPath is the one canonical folder-path → URL-path derivation; the
@@ -171,15 +185,27 @@ export async function buildFileIndex(publishedFiles, contentDir, options = {}) {
       ? (hasFolder ? slugifiedFolder : "")
       : (hasFolder ? `${slugifiedFolder}/${slug}` : slug);
 
+    // The other form of a date-prefixed URL (undated when the date is kept, dated
+    // when it is stripped), so the build can redirect it to the real one.
+    const dateAliasUrl = filenameDate && !isIndex
+      ? (() => {
+          const aliasSlug = slugFn(useDatePrefix ? filename : undatedName);
+          const aliasUrl = hasFolder ? `/${slugifiedFolder}/${aliasSlug}/` : `/${aliasSlug}/`;
+          return aliasUrl !== url ? aliasUrl : undefined;
+        })()
+      : undefined;
+
     const pageInfo = {
       title,
       ...(titleMd ? { title_md: titleMd } : {}),
+      ...(titleFromFilename ? { titleFromFilename: true } : {}),
       slug,
       fullSlug,
       folder: hasFolder ? folderPath : null,
       path: file.path,
       relativePath: file.relativePath,
       url,
+      ...(dateAliasUrl ? { dateAliasUrl } : {}),
       frontmatter,
       rawBody: body,
     };
@@ -288,7 +314,7 @@ export async function buildAttachmentIndex(contentDir, attachmentFolder) {
     const file = rawFile.replace(/\\/g, "/");
     // e.g. "media/logo.png" or "projects/My Diagram.html"
     const filename = path.basename(file);
-    const decodedFilename = decodeURIComponent(filename);
+    const decodedFilename = safeDecode(filename);
 
     // Preserve vault structure in URL: encode each segment individually
     const url = "/" + file.split("/").map(encodeURIComponent).join("/");

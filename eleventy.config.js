@@ -1,11 +1,7 @@
-import { readdirSync, readFileSync, existsSync, mkdirSync, copyFileSync } from "fs";
+import { readdirSync, readFileSync, existsSync, mkdirSync, copyFileSync, statSync } from "fs";
 import { execSync } from "child_process";
 import sharp from "sharp";
 import { join, relative, basename, extname } from "path";
-import taskLists from "markdown-it-task-lists";
-import markdownItContainer from "markdown-it-container";
-import markdownItAttrs from "markdown-it-attrs";
-import markdownItFootnote from "markdown-it-footnote";
 import pluginRss from "@11ty/eleventy-plugin-rss";
 import Image from "@11ty/eleventy-img";
 import {
@@ -13,9 +9,19 @@ import {
   resolveSiteName,
 } from "./scripts/utils/config-loader.js";
 import { formatDate } from "./scripts/utils/format-date.js";
+import { configureMarkdown } from "./scripts/utils/markdown-setup.js";
 import { parseDateField, resolveDateLabel } from "./scripts/utils/date-field.js";
 import { derivePageId } from "./scripts/utils/page-id.js";
+import { loadTemplateShapes, objectData } from "./scripts/utils/template-shapes.js";
+import { stripInlineMarkdown } from "./scripts/utils/title-deduplicator.js";
+import { slugifyTag } from "./scripts/utils/tag-extractor.js";
+import { renderRoom, roomNodes, nodesForUrls } from "./lib/visualizers/_engine/room.js";
+import { renderObject } from "./lib/visualizers/_engine/index.js";
+import { headInitScript } from "./lib/visualizers/_engine/head-init.js";
 import { smartTitleCase } from "./scripts/utils/smart-title-case.js";
+import { pageLicense } from "./scripts/utils/license.js";
+import { licensedPageNode, mergeStructuredData, jsonLdScript } from "./scripts/utils/structured-data.js";
+import { buildRobotsTxt } from "./scripts/utils/ai-access.js";
 import {
   detectVisualizers,
   renderAssetTags,
@@ -72,6 +78,46 @@ export default async function (eleventyConfig) {
 
   // Load visualizer modules for build-time transforms
   const visualizers = await loadVisualizers();
+
+  // Template shapes (note, marble, ...) are drawn by the engine. Their layouts call
+  // {% bloobObject "<name>", content %}; the page's frontmatter reaches the engine through this.ctx.
+  const templateShapes = await loadTemplateShapes("lib/visualizers");
+  // How the page's own object starts, decided in <head> before the first paint (themes with objects).
+  eleventyConfig.addShortcode("bloobHeadInit", (pageId) => headInitScript({ pageId: pageId || "" }));
+  eleventyConfig.addShortcode("bloobObject", function (name, content, inside) {
+    const shape = templateShapes.get(name);
+    if (!shape) return content;
+    const ctx = this.ctx || {};
+    // What the haus says about this kind of object (_bloob-objects.md), for "What is a marble?".
+    const about = ctx.bloobObjects?.[ctx.bloob_object || name];
+    const data = objectData(ctx, { name, about });
+    return renderObject(
+      shape,
+      { data, html: content, url: this.page?.url, pageId: ctx.bloobPageId || this.page?.url },
+      { inside: inside == null ? null : String(inside) },
+    );
+  });
+  // {% bloobRoom folder %}: a folder's pages as their closed objects (themes with objects). Reads
+  // the page catalog preprocess wrote; read again only when it changes.
+  let roomCatalog = { mtime: 0, nodes: [] };
+  const catalogNodes = () => {
+    const file = join(SRC, "graph.json");
+    try {
+      const mtime = statSync(file).mtimeMs;
+      if (mtime !== roomCatalog.mtime) roomCatalog = { mtime, nodes: JSON.parse(readFileSync(file, "utf-8")).nodes || [] };
+    } catch {
+      return [];
+    }
+    return roomCatalog.nodes;
+  };
+  // {% bloobShapeAbout %}: each template shape's own description (its manifest), as JSON, so the
+  // search can say what a marble or a note is.
+  eleventyConfig.addShortcode("bloobShapeAbout", () =>
+    JSON.stringify(Object.fromEntries([...templateShapes].filter(([, sh]) => sh.manifest?.description).map(([n, sh]) => [n, sh.manifest.description]))).replace(/</g, "\\u003c"),
+  );
+  eleventyConfig.addShortcode("bloobRoom", (folder) => renderRoom(roomNodes(catalogNodes(), folder || ""), templateShapes));
+  // {% bloobRoomOf urls %}: the named pages as a room (a tag's pages).
+  eleventyConfig.addShortcode("bloobRoomOf", (urls) => renderRoom(nodesForUrls(catalogNodes(), urls), templateShapes));
   // RSS feed plugin (provides dateToRfc3339, htmlToAbsoluteUrls, etc.)
   eleventyConfig.addPlugin(pluginRss);
 
@@ -81,6 +127,9 @@ export default async function (eleventyConfig) {
 
   // Pass through static assets
   eleventyConfig.addPassthroughCopy(`${SRC}/assets`);
+  // Markdown that objects offer to share (preprocess writes src/_share/<page>/source.md)
+  eleventyConfig.addPassthroughCopy({ [`${SRC}/_share`]: "/" });
+  eleventyConfig.ignores.add(`${SRC}/_share/**`);
   // Media files — serve at /media/ (covers optimized/ subdirectory and any media-folder files)
   eleventyConfig.addPassthroughCopy({ [`${SRC}/media`]: "media" });
   // Vault attachment files at vault-relative paths outside src/media/
@@ -101,6 +150,11 @@ export default async function (eleventyConfig) {
   eleventyConfig.addPassthroughCopy({
     [`${SRC}/_data/tagIndex.json`]: "tagIndex.json",
   });
+  // Cloudflare Pages _headers — composed by assemble-src.js (writeComposedHeaders) from the
+  // theme's _headers and the magic machines' COOP/COEP rules.
+  if (existsSync(`${SRC}/_headers`)) {
+    eleventyConfig.addPassthroughCopy({ [`${SRC}/_headers`]: "_headers" });
+  }
   // Favicons — generated at build time by scripts/generate-favicons.js into src/
   eleventyConfig.addPassthroughCopy({ [`${SRC}/favicon.png`]: "favicon.png" });
   eleventyConfig.addPassthroughCopy({
@@ -122,10 +176,6 @@ export default async function (eleventyConfig) {
     eleventyConfig.addPassthroughCopy({
       "lib/magic-machines/scene-nav-builder/app/": "tools/scene-nav-builder/",
     });
-    // Cloudflare Pages _headers — COOP/COEP for magic machines requiring SharedArrayBuffer
-    if (existsSync("lib/magic-machines/_headers")) {
-      eleventyConfig.addPassthroughCopy({ "lib/magic-machines/_headers": "_headers" });
-    }
   }
 
   // Watch for changes during development
@@ -148,69 +198,14 @@ export default async function (eleventyConfig) {
   // Both are safe for use with | safe in templates.
   eleventyConfig.addFilter("md", (str) => mdLib ? mdLib.render(String(str || "")) : str);
   eleventyConfig.addFilter("mdinline", (str) => mdLib ? mdLib.renderInline(String(str || "")) : str);
+  // | mdplain — the words of inline markdown, no syntax (`A [Redwood](https://…) Project` →
+  // `A Redwood Project`), for places that show text: search metadata, attributes.
+  eleventyConfig.addFilter("mdplain", (str) => stripInlineMarkdown(String(str ?? "")).trim());
 
-  // Single line breaks → <br> by default (matches Obsidian behavior).
-  // Opt out per-site with features: { soft_breaks: false } in _bloob-settings.md.
+  // The markdown-it setup lives in one place, shared with the live visualizer
+  // editor, so a note renders the same in both hosts (scripts/utils/markdown-setup.js).
   eleventyConfig.amendLibrary("md", (mdLib) => {
-    mdLib.set({ linkify: true });
-    if (siteConfig.features?.soft_breaks !== false) {
-      mdLib.set({ breaks: true });
-    }
-    mdLib.use(markdownItFootnote);
-    mdLib.use(taskLists, { enabled: false, label: true });
-    // {.class} {#id} {attr=value} attribute syntax on links, images, headings
-    // e.g. [CONTACT US](#footer){.button} → <a href="#footer" class="button">
-    mdLib.use(markdownItAttrs);
-
-    // ::: name [key=value ...] — section containers for styling and visualizers.
-    // First word = CSS class. Additional key=value pairs → data-vis-settings JSON.
-    // Examples:
-    //   ::: bg-dark                        → <section class="bg-dark">
-    //   ::: image-grid title="Our Team"    → <section class="image-grid" data-vis-settings='{"title":"Our Team"}'>
-    // Backwards compatible — single-word fences are unchanged.
-    mdLib.use(markdownItContainer, "section", {
-      validate: () => true,
-      render(tokens, idx) {
-        if (tokens[idx].nesting !== 1) return `</section>\n`;
-        const info = tokens[idx].info.trim();
-        const spaceIdx = info.indexOf(" ");
-        if (spaceIdx === -1) {
-          return `<section class="${info}">\n`;
-        }
-        const cls = info.slice(0, spaceIdx);
-        const settingsStr = info.slice(spaceIdx + 1).trim();
-        const settings = {};
-        const kvPattern = /([\w-]+)=(?:"([^"]*)"|([\S]*))/g;
-        let m;
-        while ((m = kvPattern.exec(settingsStr)) !== null) {
-          settings[m[1]] = m[2] !== undefined ? m[2] : m[3];
-        }
-
-        // _raw is injected by inject-container-raw.js during preprocessing.
-        // Decode it and emit as data-vis-raw so build-time visualizer transforms
-        // can parse raw markdown instead of rendered HTML — keeping parser.js
-        // shareable across Eleventy, browser preview, and Obsidian plugin.
-        const rawBase64 = settings._raw;
-        delete settings._raw;
-        const rawAttr = rawBase64
-          ? ` data-vis-raw="${rawBase64}"`
-          : "";
-
-        // _rawsource is the optional PRE-resolution capture (scene-nav only) — lets a
-        // shape's builder round-trip authored, un-resolved refs. Additive; only present
-        // when inject-container-raw injected it.
-        const rawSourceBase64 = settings._rawsource;
-        delete settings._rawsource;
-        const rawSourceAttr = rawSourceBase64
-          ? ` data-vis-raw-source="${rawSourceBase64}"`
-          : "";
-
-        const settingsAttr = Object.keys(settings).length
-          ? ` data-vis-settings='${JSON.stringify(settings)}'`
-          : "";
-        return `<section class="${cls}"${settingsAttr}${rawAttr}${rawSourceAttr}>\n`;
-      },
-    });
+    configureMarkdown(mdLib, { siteConfig, visualizers });
   });
 
   // Date formatting filter — see scripts/utils/format-date.js.
@@ -302,16 +297,8 @@ export default async function (eleventyConfig) {
   }
   eleventyConfig.addFilter("filterTagList", filterTagList);
 
-  // Slugify filter for tag URLs
-  eleventyConfig.addFilter("slugify", function (str) {
-    if (!str) return "";
-    return str
-      .toLowerCase()
-      .replace(/[^a-z0-9\s/-]/g, "")
-      .replace(/\s+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-  });
+  // Slugify filter for tag URLs: the same function inline #tag links use (tag-extractor.js)
+  eleventyConfig.addFilter("slugify", slugifyTag);
 
   // Substitutes per-page tokens inside a raw snippet (from _bloob-settings.md fences).
   // Only a fixed vocabulary is replaced — pasted HTML is NOT re-rendered through Nunjucks
@@ -331,6 +318,30 @@ export default async function (eleventyConfig) {
       (_, key) => tokens[key] ?? ""
     );
   });
+
+  // The license that applies to a page: its own `license:` frontmatter, else the site's
+  // (site.license, parsed in assemble-src.js; `license: none` takes it away). An unrecognised
+  // license is shown as written, with no link, and warned about once per spelling.
+  const warnedLicenses = new Set();
+  eleventyConfig.addFilter("pageLicense", function (raw, siteLicense) {
+    const license = pageLicense(raw, siteLicense);
+    if (license && !license.known && license !== siteLicense && !warnedLicenses.has(license.name)) {
+      warnedLicenses.add(license.name);
+      console.warn(
+        `[license] "${license.name}" (${this.page?.inputPath || "a page"}) is not a license Bloob Haus recognises: shown as written, with no link.`,
+      );
+    }
+    return license;
+  });
+
+  // One schema.org JSON-LD block per page: the site's structured-data fence plus, when the page
+  // has a license, the page with its license (partials/structured-data.njk).
+  eleventyConfig.addFilter("structuredDataScript", (siteData, license, url, title) =>
+    jsonLdScript(mergeStructuredData(siteData, licensedPageNode(license, url, title))),
+  );
+
+  // robots.txt (themes/_base/pages/robots.njk): what AIs may do (SET7), and the sitemap if any.
+  eleventyConfig.addShortcode("robotsTxt", (ai, sitemapUrl) => buildRobotsTxt({ ai: ai || undefined, sitemapUrl }));
 
   // HTML content extraction filters — useful for themes that need to separate
   // heading, images, and body text into distinct layout regions at build time.
@@ -677,9 +688,12 @@ export default async function (eleventyConfig) {
   // Runs each visualizer's transform() on rendered HTML output.
   // Runtime-only visualizers (like checkbox-tracker) return content unchanged.
   // Build-time visualizers (future: timeline, recipe-card) modify HTML here.
-  const buildTimeVisualizers = visualizers.filter(
-    (v) => typeof v.transform === "function" && v.type !== "runtime",
-  );
+  // `transformOrder` (default 0) lets a shape run after the others when it reads
+  // their output: foldable's peek row reads the card images collection draws.
+  // The sort is stable, so shapes with equal order keep their discovery order.
+  const buildTimeVisualizers = visualizers
+    .filter((v) => typeof v.transform === "function" && v.type !== "runtime")
+    .sort((a, b) => (a.transformOrder || 0) - (b.transformOrder || 0));
 
   if (buildTimeVisualizers.length > 0) {
     eleventyConfig.addTransform("visualizers", function (content) {

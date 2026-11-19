@@ -1,6 +1,6 @@
 # Theme Architecture
 
-**Status:** Two themes (`warm-kitchen`, `marbles-pouch` in progress), contract updated
+**Status:** `bloob-haus-26` is the base haus every haus starts from (leons since 2026-11-02); `warm-kitchen`, `marbles-pouch`, `melt`, `alter-engineers` stay; contract updated
 **Location:** `docs/architecture/`
 **Updated:** 2026-02-28
 
@@ -32,7 +32,8 @@ themes/
 │   │   ├── css/main.css
 │   │   └── objects/          ← Default object-type images for this theme
 │   └── theme.yaml
-├── marbles-pouch/            ← Leon's marbles theme
+├── marbles-pouch/            ← Leon's marbles theme (until 2026-11-02)
+├── bloob-haus-26/            ← the base haus: objects on a dawn/dusk world (objects: true); leons since 2026-11-02
 │   ├── layouts/
 │   ├── partials/
 │   │   ├── banner.njk        ← Full-width banner (object-aware)
@@ -387,8 +388,7 @@ All themes must respect these `features:` flags from `_bloob-settings.md`. A fea
 | Feature key | Default | Description |
 |-------------|---------|-------------|
 | `features.rss` | `true` | Generate RSS feed at `/feed.xml` |
-| `features.sitemap` | `true` | Generate `sitemap.xml` |
-| `features.robots_txt` | `true` | Generate `robots.txt` |
+| `features.show_in_search` | `quiet` | `yes` builds `sitemap.xml` + `robots.txt` from `themes/_base/pages/`; `no` puts `noindex` on every page via `partials/robots-meta.njk`, which every theme head must include, plus an `X-Robots-Tag` header for every path. A sitemap hands search engines every listed page, so it needs an active yes; unlisted pages are never in it. Every theme uses the base pair except alter-engineers. Replaces `features.sitemap` / `features.robots_txt`, which every vault scaffold set to `true` and which are now ignored. |
 | `features.search` | `true` | Pagefind search index + search bar |
 | `features.backlinks` | `true` | Show backlinks section on each page |
 | `features.og_images` | `true` | Open Graph meta tags for social sharing |

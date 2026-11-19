@@ -1,0 +1,165 @@
+/* The marble: a glass ball on the haus's own background. Clicked, its page pours out of it
+   through a funnel onto a sheet. Everything between closed and open is drawn from --open. */
+
+.bloob-object--marble {
+  --marble-size: clamp(150px, 34vw, 230px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: var(--sheet-width, 760px);
+  margin: 4vh auto 0;
+}
+
+.bloob-object--marble .bloob-object__closed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.marble-ball {
+  position: relative;
+  width: var(--marble-size);
+  height: var(--marble-size);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  /* the shadow falls away from the light (top right by day) */
+  filter: drop-shadow(calc(var(--light-x, 0.7) * -14px + 6px) 14px 18px var(--object-shadow, rgba(60, 40, 20, 0.25)));
+}
+/* a glint that twinkles now and then: it's a shiny object */
+.marble-ball::before {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  top: 16%;
+  left: 62%;
+  width: 18%;
+  height: 18%;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='white' d='M12 0c.6 6.6 5.4 11.4 12 12-6.6.6-11.4 5.4-12 12-.6-6.6-5.4-11.4-12-12C6.6 11.4 11.4 6.6 12 0z'/%3E%3C/svg%3E") center / contain no-repeat;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.9));
+  opacity: 0;
+  transform: scale(0.4) rotate(0deg);
+  animation: marble-glint 5.5s ease-in-out 1.2s infinite;
+  pointer-events: none;
+}
+@keyframes marble-glint {
+  0%, 70%, 100% { opacity: 0; transform: scale(0.4) rotate(0deg); }
+  80% { opacity: 1; transform: scale(1) rotate(25deg); }
+  90% { opacity: 0; transform: scale(0.6) rotate(45deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marble-ball::before { animation: none; opacity: 0.7; transform: scale(0.7); }
+}
+/* "click the marble to open it", only while it's closed (tap on touch screens) */
+.marble-hint {
+  margin: -2px 0 0;
+  font: 500 0.78rem/1.3 var(--font-label, sans-serif);
+  color: var(--text-light);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+html.bh-js .bloob-object--marble[data-state="closed"] .marble-hint { opacity: 0.8; }
+.marble-hint__tap { display: none; }
+@media (hover: none) {
+  .marble-hint__click { display: none; }
+  .marble-hint__tap { display: inline; }
+}
+.marble-ball:focus-visible {
+  outline: 2px solid var(--link-color, currentColor);
+  outline-offset: 6px;
+}
+.bloob-object .marble-ball__picture,
+.marble-ball canvas {
+  background: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+/* once the live glass draws, the baked picture steps back */
+.marble-ball.is-live .marble-ball__picture { visibility: hidden; }
+.marble-ball__picture[src=""] { display: none; }
+/* the light swells from the center as it opens */
+.marble-ball::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 250, 235, 0.9), transparent 60%);
+  opacity: calc(var(--open) * 0.55);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.marble-title {
+  margin: 4px 0 0;
+  font-family: var(--font-heading, serif);
+  font-size: 1.35rem;
+  text-align: center;
+  color: var(--text-color);
+}
+
+.marble-subtitle {
+  margin: -6px 0 0;
+  font: italic 1rem/1.4 var(--font-body, serif);
+  color: var(--text-light);
+  text-align: center;
+  max-width: 34rem;
+}
+.marble-subtitle:empty { display: none; }
+
+.marble-about {
+  font: 500 0.82rem/1.4 var(--font-label, sans-serif);
+  color: var(--text-light);
+  text-align: center;
+  max-width: 34rem;
+}
+.marble-about summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-block;
+  padding: 4px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+}
+.marble-about summary::-webkit-details-marker { display: none; }
+.marble-about p { margin: 10px 0 0; }
+.marble-about:has(p:empty) { display: none; }
+
+/* the open part: a funnel flaring from under the marble, then the sheet */
+.bloob-object--marble .bloob-object__open {
+  width: 100%;
+  overflow: hidden;
+  max-height: calc(var(--open) * var(--full-height, 100000px));
+}
+.marble-funnel {
+  display: block;
+  width: 100%;
+  height: 90px;
+  margin-top: -6px;
+  opacity: calc(var(--open) * 0.9);
+}
+.marble-funnel__top { stop-color: var(--marble-tint, var(--world-glow, #f3d9b0)); stop-opacity: 0.55; }
+.marble-funnel__bottom { stop-color: var(--card-bg, #fbf7ef); stop-opacity: 1; }
+
+/* the sheet is the theme's own reading sheet, so it reads well by day and by night */
+.marble-sheet {
+  --text-color: var(--surface-text-color, inherit);
+  background: var(--card-bg, #fbf7ef);
+  color: var(--surface-text-color, inherit);
+  border-radius: 0 0 14px 14px;
+  padding: 8px clamp(18px, 5vw, 56px) 40px;
+  box-shadow: 0 18px 40px -24px var(--object-shadow, rgba(60, 40, 20, 0.3));
+}
+
+/* print: the page as a document */
+@media print {
+  .world, .site-footer, .bloob-share, .marble-about, .marble-funnel { display: none !important; }
+  .bloob-object--marble { --open: 1 !important; }
+  .marble-ball { width: 120px; height: 120px; filter: none; }
+  .marble-sheet { box-shadow: none; padding: 0; }
+}

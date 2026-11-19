@@ -43,9 +43,39 @@ The session checklists below are a reminder for the END of the session.
 - `docs/CLAUDE_CONTEXT.md` — project status and architecture overview
 - `docs/TECH-DEBT.md` — a reminder list of things that are (or might still be) wrong. Verify a row
   before acting on it; delete the row when it's fixed
+- `docs/settings-backlog.md` — settings not built yet, shared with `../bloob-haus-cloud` (account
+  settings, the one-setting-several-doors rule)
 
 ## Sibling Repo: Planning Vault
 The product vision, values, room concepts, and engineering reports live in a separate Obsidian vault at `../bloobhaus-notes/` (see its `CLAUDE.md`). If you need context on *why* things are designed a certain way, check there. This repo is the source of truth for *how* — technical architecture, build pipeline, and implementation plans.
+
+## Keep the Obsidian Plugin in Sync
+The Obsidian plugin (`../bloob-haus-obsidian-plugin`, `LSanten/bloob-haus-obsidian-plugin`) re-implements
+parts of this builder so it can act inside a vault with no build: **"Copy link"** computes a note's public
+URL, and it writes the frontmatter conventions the builder reads. **Any change here to one of these must be
+mirrored in the plugin in the same piece of work** — otherwise copied links 404 or the plugin writes what the
+builder no longer reads:
+
+| Builder (this repo) | Plugin mirror |
+|---|---|
+| `scripts/utils/slug-strategy.js` (slug functions) | `modules/bloob-url-core.ts` (`slugifyLower` / `slugifyPreserve`) |
+| `scripts/utils/date-prefix.js` (date regex, keep/strip/none) | `modules/bloob-url-core.ts` (`stripDatePrefix`, `buildUrlPath`) |
+| `scripts/utils/file-index-builder.js` (URL derivation, folder indexes) | `modules/bloob-url-core.ts` (`buildUrlPath`) |
+| `scripts/utils/bloob-settings-reader.js` (`url:` block, legacy keys) | `modules/bloob-url-core.ts` (`parseUrlSettings`) |
+| frontmatter conventions (`date_created`, `date_updated`, `bloob-shape`, `tags`) | `modules/frontmatter.ts`, the plugin's CLAUDE.md "Conventions" |
+
+**Check it:** `node scripts/check-plugin-sync.js` runs a grid of tricky filenames × every `url.case` /
+`url.date_prefix` through both and must report 0 mismatches. Then cut a plugin release (its CLAUDE.md has the
+checklist). Spec for URLs: `docs/architecture/urls-and-ids.md`. This rule exists because the date-prefix logic
+drifted (2026-11-10): the builder and the plugin disagreed about `date_prefix: none` and about a space after
+the date.
+
+## Drawing code is copied into the post office
+This repo is the one home of all drawing code (decided 2026-11-16, `../bloob-haus-cloud/docs/DECISIONS.md`).
+The post office's deploy copies a shape's pure files in as they are; `lib/visualizers/letter/`
+(`renderer.js`, `paper.js`, `styles.css`) is the first. Keep those files free of imports from this repo
+and typed with JSDoc, and put anything only this repo needs in the shape's `index.js`. Details:
+`docs/architecture/visualizers.md` → "One home for drawing code".
 
 ## Cross-Platform Compatibility (Mac + Windows)
 All scripts and `package.json` commands must work on both Mac/Linux and Windows. Key rules:

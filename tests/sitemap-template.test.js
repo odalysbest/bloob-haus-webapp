@@ -1,0 +1,191 @@
+/**
+ * sitemap.xml + robots.txt + the robots meta tag: how a site shows up in search.
+ * One switch, `features.show_in_search`: yes (sitemap) | quiet (default) | no (noindex).
+ *
+ * A sitemap is an invitation: it hands Google every URL in it. So two things are
+ * load-bearing here, not cosmetic:
+ *
+ *   1. an unlisted page (visibility: unlisted, website_status: unlisted, #unlisted →
+ *      `_bloob_unlisted`) must never be in it. security-by-obscurity.md lists this as a
+ *      per-theme obligation; living in _base makes it everyone's, once.
+ *   2. no theme quietly ships its own copy, or the site's switch
+ *      (`features.show_in_search`) stops deciding anything for that theme.
+ */
+import { describe, it, expect } from "vitest";
+import nunjucks from "nunjucks";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { buildRobotsTxt, AI_DEFAULTS } from "../scripts/utils/ai-access.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const THEMES = path.join(__dirname, "../themes");
+const BASE_PAGES = path.join(THEMES, "_base/pages");
+
+/** Template body without its frontmatter, the way Eleventy hands it to Nunjucks. */
+function body(file, dir = BASE_PAGES) {
+  const text = fs.readFileSync(path.join(dir, file), "utf-8");
+  // \r?\n: on Windows the template is checked out with CRLF line endings.
+  return text.replace(/^---[\s\S]*?\r?\n---\r?\n/, "");
+}
+
+/** The `robotsTxt` shortcode, registered the way Eleventy registers a Nunjucks shortcode. */
+function RobotsTxtTag() {
+  this.tags = ["robotsTxt"];
+  this.parse = (parser, nodes) => {
+    const tok = parser.nextToken();
+    const args = parser.parseSignature(true, true);
+    parser.advanceAfterBlockEnd(tok.value);
+    return new nodes.CallExtension(this, "run", args);
+  };
+  this.run = (_context, ai, sitemapUrl) => new nunjucks.runtime.SafeString(buildRobotsTxt({ ai, sitemapUrl }));
+}
+
+function render(file, ctx) {
+  const env = new nunjucks.Environment();
+  env.addFilter("dateToRfc3339", (d) => new Date(d).toISOString());
+  env.addExtension("robotsTxt", new RobotsTxtTag());
+  return env.renderString(body(file), ctx);
+}
+
+const page = (url, data = {}) => ({ url, date: "2026-10-01", data });
+const site = { url: "https://leons.bloob.haus" };
+
+describe("base sitemap.xml", () => {
+  it("exists in the base theme", () => {
+    expect(fs.existsSync(path.join(BASE_PAGES, "sitemap.njk"))).toBe(true);
+  });
+
+  it("lists a normal page with the site's own address", () => {
+    const xml = render("sitemap.njk", { site, collections: { all: [page("/marbles/on-thresholds/")] } });
+    expect(xml).toContain("<loc>https://leons.bloob.haus/marbles/on-thresholds/</loc>");
+  });
+
+  it("starts with the XML declaration (nothing may come before it)", () => {
+    const xml = render("sitemap.njk", { site, collections: { all: [] } });
+    expect(xml.startsWith("<?xml")).toBe(true);
+  });
+
+  it("declares the sitemaps.org namespace (Google ignores a urlset without it)", () => {
+    const xml = render("sitemap.njk", { site, collections: { all: [] } });
+    expect(xml).toContain('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">');
+  });
+
+  it("always lists the homepage, even when a theme keeps it out of collections", () => {
+    // marbles-pouch's index.njk is eleventyExcludeFromCollections: true, so `/` is not in
+    // collections.all at all. A sitemap without its front door can't be stitched into a
+    // bigger one (rooms, sub-repos) without losing the root.
+    const xml = render("sitemap.njk", { site, collections: { all: [page("/marbles/a/")] } });
+    expect(xml).toContain("<loc>https://leons.bloob.haus/</loc>");
+  });
+
+  it("lists the homepage once when the vault's own index is in collections", () => {
+    const xml = render("sitemap.njk", {
+      site,
+      collections: { all: [page("/", { eleventyExcludeFromCollections: ["tagList"] })] },
+    });
+    expect(xml.match(/<loc>https:\/\/leons\.bloob\.haus\/<\/loc>/g)).toHaveLength(1);
+  });
+
+  it("lists folder index pages (excluded only from tag listings, not from the site)", () => {
+    // preprocess-content.js gives every index.md / _index.md eleventyExcludeFromCollections:
+    // ["tagList"]: out of tag lists, still a real page. Only `true` means "not a page".
+    const xml = render("sitemap.njk", {
+      site,
+      collections: { all: [page("/resources/", { eleventyExcludeFromCollections: ["tagList"] })] },
+    });
+    expect(xml).toContain("<loc>https://leons.bloob.haus/resources/</loc>");
+  });
+
+  it("never lists an unlisted page", () => {
+    const xml = render("sitemap.njk", {
+      site,
+      collections: {
+        all: [page("/marbles/public/"), page("/clients/a8f3k2/", { _bloob_unlisted: true })],
+      },
+    });
+    expect(xml).toContain("/marbles/public/");
+    expect(xml).not.toContain("/clients/a8f3k2/");
+  });
+});
+
+describe("base robots.txt", () => {
+  const withSearch = (show_in_search) => ({ ...site, ai: AI_DEFAULTS, features: { show_in_search } });
+
+  it("points search engines at this site's sitemap when it has one", () => {
+    expect(fs.existsSync(path.join(BASE_PAGES, "robots.njk"))).toBe(true);
+    const txt = render("robots.njk", { site: withSearch("yes") });
+    expect(txt).toContain("Sitemap: https://leons.bloob.haus/sitemap.xml");
+  });
+
+  it("names no sitemap on a quiet or no site (none is built)", () => {
+    for (const mode of ["quiet", "no"]) expect(render("robots.njk", { site: withSearch(mode) })).not.toContain("Sitemap:");
+  });
+
+  it("says what AIs may do (SET7), and lets everyone else in", () => {
+    const txt = render("robots.njk", { site: withSearch("quiet") });
+    expect(txt).toMatch(/^User-agent: \*\nAllow: \/$/m);
+    expect(txt).toMatch(/User-agent: GPTBot\n[\s\S]*?Disallow: \//);
+    expect(txt).toContain("(train: no)");
+  });
+
+  it("is never Disallow: / for everyone, even on a show_in_search: no site", () => {
+    // Crawlers must fetch a page to see its noindex; a blanket Disallow would hide it.
+    const txt = render("robots.njk", { site: withSearch("no") });
+    expect(txt).toMatch(/^User-agent: \*\nAllow: \/$/m);
+  });
+});
+
+describe("one switch for every theme", () => {
+  it("no maintained theme ships its own sitemap or robots page", () => {
+    // alter-engineers is excepted: not maintained from this laptop (Leon, 2026-10-25).
+    const themes = fs
+      .readdirSync(THEMES, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith("_") && d.name !== "alter-engineers")
+      .map((d) => d.name);
+    const own = themes.flatMap((t) =>
+      ["sitemap.njk", "robots.njk"]
+        .filter((f) => fs.existsSync(path.join(THEMES, t, "pages", f)))
+        .map((f) => `${t}/pages/${f}`),
+    );
+    expect(own).toEqual([]);
+  });
+});
+
+describe("robots meta tag (partials/robots-meta.njk)", () => {
+  const PARTIALS = path.join(THEMES, "_base/partials");
+  const meta = (ctx) =>
+    new nunjucks.Environment().renderString(body("robots-meta.njk", PARTIALS), ctx).trim();
+
+  it("says nothing on a normal page of a quiet or yes site", () => {
+    expect(meta({ site: { features: { show_in_search: "quiet" } } })).toBe("");
+    expect(meta({ site: { features: { show_in_search: "yes" } } })).toBe("");
+  });
+
+  it("keeps an unlisted page out of search", () => {
+    expect(meta({ site: { features: {} }, _bloob_unlisted: true })).toContain("noindex");
+  });
+
+  it("keeps every page of a show_in_search: no site out of search", () => {
+    expect(meta({ site: { features: { show_in_search: "no" } } })).toContain("noindex");
+  });
+
+  it("is used by every maintained theme's head", () => {
+    // A head that skips the partial silently ignores the switch for that theme.
+    const heads = fs
+      .readdirSync(THEMES, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name !== "alter-engineers")
+      .map((d) => path.join(THEMES, d.name, "partials/head.njk"))
+      .filter((f) => fs.existsSync(f));
+    expect(heads.length).toBeGreaterThan(1);
+    // Directly, or through the shared SEO block (partials/seo-meta.njk), which includes it.
+    const seoMeta = fs.readFileSync(path.join(PARTIALS, "seo-meta.njk"), "utf-8");
+    expect(seoMeta).toContain('{% include "partials/robots-meta.njk" %}');
+    for (const head of heads) {
+      const text = fs.readFileSync(head, "utf-8");
+      const reaches =
+        text.includes('{% include "partials/robots-meta.njk" %}') || text.includes('{% include "partials/seo-meta.njk" %}');
+      expect(reaches, head).toBe(true);
+    }
+  });
+});

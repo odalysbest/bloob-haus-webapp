@@ -21,5 +21,10 @@ features:
   # Verified with: node scripts/audit-visualizer-detection.js --src=src-leons
   per_page_visualizers: true
   magic_machines: true
-  date_from_filename: true   # YYYY-MM-DD- filename prefix → date_created (date stays in URL)
-  # date_prefix_slugs: false # (default) strip the YYYY-MM-DD- prefix from the URL slug — off for now
+  # yes = sitemap.xml + robots.txt hand search engines every listed page | quiet (default)
+  # = no sitemap | no = every page says noindex. Unlisted pages are never listed.
+  show_in_search: yes
+  # Inline #tags become links to their tag page where they were written; the page's foot then
+  # shows the frontmatter tags only (scripts/utils/inline-tags.js)
+  inline_tag_links: true
+  date_from_filename: true   # legacy: date stays in URL — the vault's url.date_prefix: keep wins anyway

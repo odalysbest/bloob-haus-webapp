@@ -111,18 +111,23 @@ internal `_bloob_unlisted: true` flag):
 - `visibility: unlisted` (frontmatter) — **most portable; works in any `publish_mode`. Prefer this.**
 - `website_status: unlisted` (frontmatter) — only meaningful when `publish_mode: status_field`.
 - `#unlisted` (tag, in frontmatter or inline body).
+- **Living inside a folder listed in `unlisted_folders`** (`_bloob-settings.md`), whatever the page's
+  own YAML says. **Recommended for any client container**: one forgotten `visibility: unlisted`
+  can no longer publish the token in the sitemap, search, RSS or graph.json.
 
 When `_bloob_unlisted` is set, the pipeline does this **universally, for every theme**:
 
 | Concern | Wiring | Automatic? |
 |---------|--------|:----------:|
-| `noindex,nofollow` meta tag | `themes/_base/partials/head.njk` checks `_bloob_unlisted` | ✅ Universal |
+| `noindex,nofollow` meta tag | `themes/_base/partials/robots-meta.njk` checks `_bloob_unlisted` (and `features.show_in_search: no` for a whole site); included by every theme head except alter-engineers | ✅ Universal |
 | Excluded from RSS / all collections | `eleventyExcludeFromCollections: true` via `eleventyComputed.js` | ✅ Universal |
+| No third-party snippets, comments or visitor count | the four `_base` partials that inject them (`site-snippets-head/-footer`, `comments`, `visitor-count`) render nothing when `_bloob_unlisted` (2026-10-28) | ✅ Universal |
 | Excluded from internal search (Pagefind) | layout swaps `data-pagefind-body` → `data-pagefind-ignore` | ⚠️ Per-theme obligation |
-| Excluded from `sitemap.xml` | theme `sitemap.njk` filters `_bloob_unlisted` (and excluded collections) | ⚠️ Per-theme obligation |
+| Excluded from `sitemap.xml` | `themes/_base/pages/sitemap.njk` filters `_bloob_unlisted` (and excluded collections); one sitemap for every theme except alter-engineers, built only when the site sets `features.show_in_search: yes` | ✅ Universal |
 
 > Check the **theme implementation status** table in [settings-registry.md](settings-registry.md)
-> before relying on a theme's sitemap/pagefind filtering — some themes have no sitemap at all, and
+> before relying on a theme's pagefind filtering (the sitemap comes from `_base` for every theme
+> except alter-engineers, which keeps its own) — and
 > a theme that filters only `website_status` may miss a `visibility: unlisted` page. (The collection
 > exclusion via `eleventyExcludeFromCollections` covers the common case regardless, because
 > sitemaps iterate `collections.all`.)
@@ -185,11 +190,14 @@ it is unreachable without the token, and a wrong guess returns a 404 that doesn'
 The preprocessor (`preprocess-content.js`, "Generating folder index stubs") auto-creates a rendered
 `index.md` for **every top-level folder** that lacks one — and that stub **is** a page that lands in
 `collections.all` and `sitemap.xml`, publicly announcing the folder. It would not leak the token or
-client (those are nested), but it advertises that the container exists. Two ways to prevent it:
+client (those are nested), but it advertises that the container exists. Three ways to prevent it:
 
+- **List the container in `unlisted_folders`** (`_bloob-settings.md`): no stub is generated at all,
+  `/clients/` answers 404, every page inside is unlisted, and raw files get an `X-Robots-Tag`
+  header. **Recommended** (since 2026-10-29).
 - **Add your own index**, marked unlisted — `clients/_index.md` with `visibility: unlisted`. This
   both suppresses the auto-stub (an existing `_index.md` is respected) **and** keeps `/clients/`
-  out of the sitemap. Gives you a clean `/clients/<token>/…` URL. **Recommended.**
+  out of the sitemap. Gives you a clean `/clients/<token>/…` URL.
 - **Prefix the container with `_`** — `_clients/`. Folders starting with `_` are skipped by the
   stub generator entirely. Simpler (no extra file) but the underscore shows in the URL.
 
@@ -286,6 +294,13 @@ request: under the default referrer policy Google learns the *origin* of an unli
 secret path. Acceptable for "unlisted", but it means **a rendered page is never 100% dependency-free.**
 For maximum-obscurity client work, a **self-contained raw HTML file (Tier A only)** is the safest
 vehicle, because you control every byte and can guarantee zero external requests.
+
+**Site-configured Tier C code is kept off unlisted pages automatically** (since 2026-10-28): the
+`_bloob-settings.md` snippet fences (`header-snippet`, `goat-counter-tracking`, `footer-snippet`,
+`embed-endofbody`), the `fast-comments-embed` fence and the GoatCounter visitor count are not
+rendered when `_bloob_unlisted` is set. Before that, any site with analytics or comments sent every
+unlisted page's secret URL to those services. Fonts and theme CSS from CDNs (Tier B) still load. A
+shape that loads its own third-party script is not covered: check it in the dependency scan.
 
 ### Other leak vectors (not dependency-related)
 

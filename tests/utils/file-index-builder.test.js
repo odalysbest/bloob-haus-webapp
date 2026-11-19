@@ -85,6 +85,18 @@ describe('buildFileIndex', () => {
       expect(page.title).toBe('Cake');
     });
 
+    it('says when the title only came from the filename', async () => {
+      const index = await writeAndIndex([
+        makeFile('sets/2026-11-07 Aden Set.md', '---\n---\nHi friends\n\n### > The set list'),
+        makeFile('sets/titled.md', '---\ntitle: Given\n---\nWords'),
+        makeFile('sets/headed.md', '---\n---\n# A heading\nWords'),
+      ]);
+      const byFile = Object.fromEntries(Object.values(index.pages).map((p) => [path.basename(p.relativePath), p]));
+      expect(byFile['2026-11-07 Aden Set.md'].titleFromFilename).toBe(true);
+      expect(byFile['titled.md'].titleFromFilename).toBeUndefined();
+      expect(byFile['headed.md'].titleFromFilename).toBeUndefined();
+    });
+
     it('deslugifies and smart-cases a hyphenated filename fallback', async () => {
       const index = await writeAndIndex([
         makeFile('recipes/how-to-melt.md', '---\n---\nJust content'),
@@ -99,6 +111,16 @@ describe('buildFileIndex', () => {
       ]);
       const page = Object.values(index.pages)[0];
       expect(page.title).toBe('Come to MELT');
+    });
+
+    it('leaves a fold marker out of a heading-derived title', async () => {
+      const index = await writeAndIndex([
+        makeFile('sets/set.md', '---\n---\nIntro\n\n## > Track list as played'),
+        makeFile('sets/open.md', '---\n---\n## ^**Open** notes'),
+        makeFile('sets/plain.md', '---\n---\n## A > B'),
+      ]);
+      const titles = Object.values(index.pages).map((p) => p.title).sort();
+      expect(titles).toEqual(['A > B', 'Open notes', 'Track list as played']);
     });
 
     it('still resolves wiki-links written against the raw filename', async () => {
@@ -135,6 +157,45 @@ describe('buildFileIndex', () => {
       ]);
       const page = Object.values(index.pages)[0];
       expect(page.slug).toBe('my-recipe');
+    });
+  });
+
+  // --- Date-prefixed filenames: the "other" URL, for redirects ---
+
+  describe('dateAliasUrl (date-prefixed filenames)', () => {
+    async function indexWith(files, options) {
+      const publishedFiles = [];
+      for (const f of files) {
+        await fs.ensureDir(path.dirname(f.path));
+        await fs.writeFile(f.path, f.content);
+        publishedFiles.push({ path: f.path, relativePath: f.relativePath });
+      }
+      return buildFileIndex(publishedFiles, tmpDir, options);
+    }
+
+    it('keep: URL has the date, alias is the undated URL', async () => {
+      const index = await indexWith(
+        [makeFile('sets/2026-11-07 Aden Bday.md', '---\n---\nhi')],
+        { slugStrategy: 'preserve-case' },
+      );
+      const page = Object.values(index.pages)[0];
+      expect(page.url).toBe('/sets/2026-11-07-Aden-Bday/');
+      expect(page.dateAliasUrl).toBe('/sets/Aden-Bday/');
+    });
+
+    it('strip: URL is undated, alias is the dated URL', async () => {
+      const index = await indexWith(
+        [makeFile('sets/2026-11-07 Aden Bday.md', '---\n---\nhi')],
+        { slugStrategy: 'preserve-case', stripDatePrefix: true },
+      );
+      const page = Object.values(index.pages)[0];
+      expect(page.url).toBe('/sets/Aden-Bday/');
+      expect(page.dateAliasUrl).toBe('/sets/2026-11-07-Aden-Bday/');
+    });
+
+    it('no date prefix → no alias', async () => {
+      const index = await indexWith([makeFile('sets/Plain.md', '---\n---\nhi')]);
+      expect(Object.values(index.pages)[0].dateAliasUrl).toBeUndefined();
     });
   });
 

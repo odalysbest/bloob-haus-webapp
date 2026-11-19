@@ -39,8 +39,13 @@ mkdirSync(CSS_OUT_DIR, { recursive: true });
 mkdirSync(dirname(DATA_OUT), { recursive: true });
 
 // Auto-discover visualizer folders
+// An underscore prefix marks a folder that is NOT a shape — `_utils/` holds pure helpers
+// shared by several shapes (see docs/architecture/visualizers.md → "Shared helpers").
+// Without this filter it was enumerated as a visualizer and landed in visualizers.json as a
+// manifest-less entry, which that doc defines as "always loaded" — a phantom shape that also
+// skews audit-visualizer-detection.js. Mirrors the vault's `_bloob-*` system-file convention.
 const visualizerDirs = readdirSync(VISUALIZERS_DIR, { withFileTypes: true })
-  .filter((d) => d.isDirectory())
+  .filter((d) => d.isDirectory() && !d.name.startsWith("_"))
   .map((d) => d.name);
 
 console.log(
@@ -128,6 +133,22 @@ for (const name of visualizerDirs) {
   }
 
   manifest.push(entry);
+}
+
+// The engine's browser toolbox and shared CSS (lib/visualizers/_engine). Its underscore keeps it
+// out of the visualizer list above; themes with objects load these two files directly.
+const engineEntry = join(VISUALIZERS_DIR, "_engine", "toolbox.js");
+if (existsSync(engineEntry)) {
+  await build({
+    entryPoints: [engineEntry],
+    bundle: true,
+    outfile: join(JS_OUT_DIR, "..", "bloob-engine.js"),
+    format: "iife",
+    minify: process.env.NODE_ENV === "production",
+    sourcemap: process.env.NODE_ENV !== "production",
+  });
+  cpSync(join(VISUALIZERS_DIR, "_engine", "engine.css"), join(CSS_OUT_DIR, "..", "bloob-engine.css"));
+  console.log("[bundle] engine: toolbox.js → assets/js/bloob-engine.js, engine.css → assets/css/bloob-engine.css");
 }
 
 // Write manifest so Nunjucks templates can auto-include visualizer assets

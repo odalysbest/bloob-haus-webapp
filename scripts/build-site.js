@@ -15,10 +15,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { loadSiteConfig, resolveSiteName } from "./utils/config-loader.js";
-import { assembleSrc } from "./assemble-src.js";
+import { assembleSrc, showInSearch } from "./assemble-src.js";
+import { addNoindexHeader, addFolderNoindexHeaders } from "./utils/search-headers.js";
+import { writeRedirects } from "./utils/date-redirects.js";
 import { cloneContent } from "./clone-content.js";
 import { preprocessContent } from "./preprocess-content.js";
 import { generateOgImages } from "./generate-og-images.js";
+import { bakeMarbles } from "./bake-marbles.js";
 import { generateFavicons } from "./generate-favicons.js";
 import { generateBloobIcons } from "./generate-bloob-icons.js";
 import { getSrcDir } from "./utils/get-src-dir.js";
@@ -139,6 +142,9 @@ async function buildSite() {
       await generateOgImages();
     }
 
+    // Step 5.55: Bake every marble into a picture (after the link previews it reads)
+    await bakeMarbles({ srcDir });
+
     // Step 5.6: Re-run favicon generation as a safety pass
     // (assemble-src step 9 now runs after preprocessing, so this is normally redundant)
     console.log("\n--- Step 5.6: Generating favicons ---");
@@ -163,6 +169,24 @@ async function buildSite() {
 
     // Step 7: Build Eleventy
     await buildEleventy(config);
+
+    // Step 7.1: show_in_search: no also covers what no theme head renders
+    // (magic machines, raw HTML, PDFs, images) with an X-Robots-Tag header.
+    if (showInSearch(config.features) === "no") {
+      await addNoindexHeader(path.join(ROOT_DIR, "_site"), config.mount_path);
+      console.log("[build] show_in_search: no → X-Robots-Tag: noindex on every path (_headers)");
+    }
+    // unlisted_folders: raw HTML, PDFs and images in them get X-Robots-Tag too.
+    if (config.unlisted_folders?.length) {
+      await addFolderNoindexHeaders(path.join(ROOT_DIR, "_site"), config.unlisted_folders, config.mount_path);
+      console.log(`[build] unlisted_folders → X-Robots-Tag: noindex on ${config.unlisted_folders.join(", ")} (_headers)`);
+    }
+
+    // Step 7.2: url.date_redirect — the other form of each date-prefixed URL → the real one.
+    if (preprocessResult.dateRedirects?.length) {
+      await writeRedirects(path.join(ROOT_DIR, "_site"), preprocessResult.dateRedirects, config.mount_path);
+      console.log(`[build] url.date_redirect → ${preprocessResult.dateRedirects.length} redirect(s) in _redirects`);
+    }
 
     // Build summary
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);

@@ -1,7 +1,7 @@
 # Bloob Haus - Claude Code Context
 
 **Purpose:** Share this file at the start of each Claude Code session.
-**Last Updated:** 2026-07-28
+**Last Updated:** 2026-11-10
 **Current Phase:** melt theme under active development; alter-engineers pending deployment. Multi-site operational.
 
 **See also:** `CLAUDE.md` at repo root for development practices (auto-read by Claude Code). `docs/TECH-DEBT.md` for outstanding technical debt.
@@ -85,7 +85,7 @@ Bloob Haus transforms Obsidian markdown vaults into hosted static websites using
 - **Nested shapes govern their own presentation.** A `preserve` container (like `article`) must let a nested shape style itself, but CSS has no notion of a shape boundary, so a container's prose rules leak in and win by specificity accident. Convention: a nested shape scopes its rules to its own container root. Guarded by `tests/shape-nesting.test.js`. Open decision: cascade layers vs `@scope` — see `shapes.md`.
 - **Pure-renderer standard** (adopted 2026-07-27) — every content-generating shape must produce its complete markup from a pure `renderer.js`; `browser.js` is behavior-only, and external data enters via a pure `resolve.js`. Makes indexability a property of the shape rather than of which visual was picked, and lets the future standalone playground reuse every conforming shape with no second implementation. `collection` is the reference; retrofit of `folder-preview`/`circular-nav`/`fridge-magnets`/`tags`/`graph` is TECH-DEBT #40. See `docs/architecture/visualizers.md`.
 - **`collection` shape** — all five display modes (cards/list/slider/bubbles/marbles) render crawlable HTML at build time, including file-scope use. Search filter styled from the shared `--sv-*` token contract so it matches the site-wide search bar in any theme.
-- **Per-page visualizer loading** (`features.per_page_visualizers`, 2026-07-27) — pages load only the visualizer CSS/JS they use; detection runs on rendered HTML and shapes opt in via `detect` in `manifest.json`. Live on melt + marbles (24 assets → 11–13/page); **off for buffbaby + alter-engineers**. Always run `node scripts/audit-visualizer-detection.js --src=src-<name>` before enabling on a new site.
+- **Per-page visualizer loading** (`features.per_page_visualizers`, 2026-07-27) — pages load only the visualizer CSS/JS they use; detection runs on rendered HTML and shapes opt in via `detect` in `manifest.json`. Live on melt, marbles and buffbaby (24 assets → 11–13/page); **off only for alter-engineers and odalys**. Always run `node scripts/audit-visualizer-detection.js --src=src-<name>` before enabling on a new site.
 - Modular visualizer architecture with auto-discovery
 - `:::` container visualizers (image-grid, photo-grid live; `markdownItContainer` parses key=value settings → `data-vis-settings`)
 - `photo-grid` visualizer: `cols: N` uniform or `layout: 1,3,1` mixed-row grids; `ratio`/`gap`/`padding` params; PhotoSwipe lightbox automatic; columns preserved on mobile
@@ -104,7 +104,8 @@ Bloob Haus transforms Obsidian markdown vaults into hosted static websites using
 - Per-file `exclude_files` list in site YAML config
 - Multi-site build isolation (src/ cleaned between builds, repo-switch detection)
 - Reserved directory filtering (media, assets, etc. excluded from section nav)
-- Test suite: 851 tests across 48 files (Vitest), co-located visualizer tests
+- Dated filenames (`2026-11-07 My Note` / `2026-11-07-my-note`): date fills a missing `date_created`; `url.date_prefix` keep/strip decides the URL; `url.date_redirect` 301s the other form (`_redirects`)
+- Test suite: 1437 tests across 107 files (Vitest), co-located visualizer tests
 - Validation report with `--strict` flag for CI (fails build on broken links)
 
 **Build pipeline:**

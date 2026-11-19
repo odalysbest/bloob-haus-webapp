@@ -7,6 +7,8 @@
 import fs from "fs-extra";
 import path from "path";
 import matter from "gray-matter";
+import { normalizeUnlistedFolders } from "./unlisted-folders.js";
+import { parseAiSwitches, repairAiLine } from "./ai-access.js";
 
 const SETTINGS_FILENAME = "_bloob-settings.md";
 
@@ -69,6 +71,26 @@ export function parseEmbedFences(markdownBody) {
 }
 
 /**
+ * Pre-concatenates the auto-injected fences into `site.snippets.{head,bodyEnd}` for the shared
+ * partials (site-snippets-head.njk / site-snippets-footer.njk). The `structured-data` fence is not
+ * a snippet: it is merged with the page's own data into one JSON-LD block per page
+ * (partials/structured-data.njk, scripts/utils/structured-data.js).
+ *
+ * @param {Object} embeds - map from parseEmbedFences
+ * @returns {{ head: string, bodyEnd: string }}
+ */
+export function composeSnippets(embeds = {}) {
+  const snippets = { head: "", bodyEnd: "" };
+  const add = (target, text) => {
+    snippets[target] = snippets[target] ? `${snippets[target]}\n${text}` : text;
+  };
+  for (const [name, target] of Object.entries(EMBED_TARGETS)) {
+    if (embeds[name]) add(target, embeds[name]);
+  }
+  return snippets;
+}
+
+/**
  * Extracts the GoatCounter site code from the `goat-counter-tracking` snippet.
  *
  * The user already pastes their tracking script, which carries the code in its
@@ -93,6 +115,39 @@ export function parseGoatCounterCode(embeds) {
 }
 
 /**
+ * Parses the text of _bloob-settings.md. One known mistake is repaired instead of failing: the
+ * one-line `ai:` setting written with spaces after its colons (`ai: train: no`), which YAML can't
+ * read. A file that doesn't parse loses every setting in it, the blocklist tag included, so that
+ * line must never take the rest of the file down with it.
+ *
+ * @param {string} text
+ * @returns {{data: Object, content: string}} gray-matter's result
+ * @throws when the file doesn't parse and the ai: repair doesn't help
+ */
+export function parseSettingsText(text) {
+  // Options passed on purpose: without them gray-matter caches a file *before* parsing it, so
+  // after one failed parse the same text comes back as {} with no error, every setting gone.
+  try {
+    return matter(text, {});
+  } catch (error) {
+    const repaired = repairAiLine(text);
+    if (!repaired) throw error;
+    let result;
+    try {
+      result = matter(repaired, {});
+    } catch {
+      throw error; // broken somewhere else too: report the original problem
+    }
+    console.warn(
+      `[bloob-settings] The ai: line has a space after a colon, which YAML can't read on one line. ` +
+        `Read it as "${result.data.ai}". Write it without the spaces (ai: read_links:yes, search:yes, train:no) ` +
+        `or one switch per line under ai:.`,
+    );
+    return result;
+  }
+}
+
+/**
  * Reads and parses _bloob-settings.md from a content directory.
  * @param {string} contentDir - Path to the content directory
  * @returns {Object|null} Parsed frontmatter settings, or null if file not found
@@ -109,7 +164,7 @@ export async function readBloobSettings(contentDir) {
 
   try {
     const content = await fs.readFile(settingsPath, "utf-8");
-    const { data: frontmatter, content: body } = matter(content);
+    const { data: frontmatter, content: body } = parseSettingsText(content);
 
     // Snippet fences live in the body (never frontmatter — raw <script> would break YAML).
     frontmatter._embeds = parseEmbedFences(body);
@@ -134,8 +189,12 @@ export async function readBloobSettings(contentDir) {
  * @param {Object} bloobSettings - Settings from _bloob-settings.md
  * @returns {Object} Merged configuration
  */
+function withThemeOverride(siteConfig) {
+  return process.env.THEME_OVERRIDE ? { ...siteConfig, theme: process.env.THEME_OVERRIDE } : siteConfig;
+}
+
 export function mergeBloobSettings(siteConfig, bloobSettings) {
-  if (!bloobSettings) return siteConfig;
+  if (!bloobSettings) return withThemeOverride(siteConfig);
 
   // Map _bloob-settings.md fields to siteConfig structure
   const merged = { ...siteConfig };
@@ -148,6 +207,9 @@ export function mergeBloobSettings(siteConfig, bloobSettings) {
     author: bloobSettings.author || siteConfig.site?.author,
     language: bloobSettings.language || siteConfig.site?.language,
     footer_text: bloobSettings.footer_text || siteConfig.site?.footer_text,
+    // License for the site's writing (scripts/utils/license.js). `??` so `license: none` in the
+    // vault still beats a license in sites/*.yaml.
+    license: bloobSettings.license ?? siteConfig.site?.license,
     footer_searchbar: bloobSettings.footer_searchbar ?? siteConfig.site?.footer_searchbar ?? false,
     // Logo/favicon: wiki-link [[filename]] or plain path; resolved to /media/ URL by assemble-src
     logo: bloobSettings.logo || siteConfig.site?.logo,
@@ -157,9 +219,13 @@ export function mergeBloobSettings(siteConfig, bloobSettings) {
     background_image: bloobSettings.background_image || siteConfig.site?.background_image,
   };
 
-  // Theme
+  // Theme. THEME_OVERRIDE (set only by the leons preview workflow) wins over the vault, so a pull
+  // request can preview a new theme without changing the live site's settings.
   if (bloobSettings.theme) {
     merged.theme = bloobSettings.theme;
+  }
+  if (process.env.THEME_OVERRIDE) {
+    merged.theme = process.env.THEME_OVERRIDE;
   }
 
   // Permalinks
@@ -233,6 +299,21 @@ export function mergeBloobSettings(siteConfig, bloobSettings) {
       bloobSettings.show_visitor_count ?? siteConfig.analytics?.show_visitor_count ?? false,
   };
 
+  // What AIs may do (SET7, scripts/utils/ai-access.js). Each door only overrides the switches it
+  // writes, and the vault wins. Defaults are filled in when site.js is written (assemble-src.js).
+  if (bloobSettings.ai !== undefined && bloobSettings.ai !== null) {
+    const fromConfig = parseAiSwitches(siteConfig.ai);
+    const fromVault = parseAiSwitches(bloobSettings.ai);
+    for (const warning of [...fromConfig.warnings, ...fromVault.warnings]) console.warn(`[bloob-settings] ${warning}`);
+    merged.ai = { ...fromConfig.switches, ...fromVault.switches };
+  }
+
+  // Folders whose pages are always unlisted (scripts/utils/unlisted-folders.js). Owned by the
+  // vault: _bloob-settings.md wins over sites/*.yaml.
+  merged.unlisted_folders = normalizeUnlistedFolders(
+    bloobSettings.unlisted_folders ?? siteConfig.unlisted_folders,
+  );
+
   // Theme-specific settings — opaque bag passed through to site.theme_settings in templates
   if (bloobSettings.theme_settings) {
     merged.theme_settings = {
@@ -260,17 +341,26 @@ export function mergeBloobSettings(siteConfig, bloobSettings) {
       merged.permalinks = { ...merged.permalinks, strategy };
     }
 
-    // date_prefix → date_from_filename / date_prefix_slugs feature flags
-    //   keep  = date stays in the URL      (date_from_filename, no strip)
-    //   strip = date used but removed from URL (date_from_filename + date_prefix_slugs)
-    //   none  = leading date ignored        (default)
+    // date_prefix → date_from_filename / date_prefix_slugs feature flags, read back
+    // through resolveDatePrefixMode() in date-prefix.js:
+    //   keep  = date stays in the URL       (date_from_filename, no strip)
+    //   strip = date removed from the URL   (date_prefix_slugs)
+    //   none  = legacy name for strip: Eleventy always stripped the date for it
+    // Either way the filename date fills a missing date_created (universal).
     if (u.date_prefix) {
-      const dp = u.date_prefix;
+      const keep = u.date_prefix === "keep";
       merged.features = {
         ...merged.features,
-        date_from_filename: dp === "keep" || dp === "strip",
-        date_prefix_slugs: dp === "strip",
+        date_from_filename: keep,
+        date_prefix_slugs: !keep,
       };
+    }
+
+    // date_redirect → features.date_redirects (on unless explicitly off): the other
+    // form of a date-prefixed URL redirects to the real one. See date-redirects.js.
+    if (u.date_redirect !== undefined && u.date_redirect !== null) {
+      const off = u.date_redirect === false || ["no", "off", "false"].includes(String(u.date_redirect).toLowerCase());
+      merged.features = { ...merged.features, date_redirects: !off };
     }
 
     // mount_path → subpath mount (empty string means "no mount")

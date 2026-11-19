@@ -1,0 +1,24 @@
+{#- Around every page's words: tags, pages that link here, the graph, comments. The reading
+    sheet and the objects that open into an article (a marble) both include it. -#}
+  {# With inline #tags linked where they were written (features.inline_tag_links), the foot shows
+     the frontmatter's tags only, so a tag is never listed twice (Leon's feedback 59526537). #}
+  {% set footTags = (yaml_tags or []) if site.features.inline_tag_links else tags %}
+  {% if footTags %}
+  {% set displayTags = footTags | filterTagList %}
+  {% if displayTags.length %}
+  <div class="page-tags" data-pagefind-ignore>
+    {% for tag in displayTags %}
+    <a href="{{ ("/tags/" + (tag | slugify) + "/") | url }}" class="tag-badge" data-pagefind-filter="tag">{{ tag }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {% include "partials/backlinks.njk" %}
+
+  {% for vis in visualizers %}{% if vis.name == "graph" and vis.hasJs %}
+  <div class="graph-visualizer" data-current-page="{{ page.url }}" {% if graph %}data-page-settings='{{ graph | dump }}'{% endif %}></div>
+  {% endif %}{% endfor %}
+
+  {# Comments live on the sheet, so they stay readable by day and night #}
+  {% include "partials/comments.njk" %}

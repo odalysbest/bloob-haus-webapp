@@ -18,7 +18,8 @@ URL without reading the webapp's `sites/*.yaml`.
 url:
   base: https://leons.bloob.haus   # full base URL (subdomain OR custom domain)
   case: preserve                   # preserve | lower
-  date_prefix: keep                # keep | strip | none
+  date_prefix: keep                # keep | strip   (none = old name for strip)
+  date_redirect: true              # the other form of a dated URL forwards to the real one
   mount_path: ""                   # optional subpath, e.g. "marbles"
 ```
 
@@ -26,7 +27,8 @@ url:
 |-----|--------|---------|
 | `base` | full URL | Site origin. `https://{subdomain}.bloob.haus` or a custom domain. |
 | `case` | `preserve` / `lower` | Casing of path segments. `lower` = lowercase everything (slugify); `preserve` = keep original capitals. |
-| `date_prefix` | `keep` / `strip` / `none` | How a leading `YYYY-MM-DD-` on a filename is treated. `keep` = date stays in the URL; `strip` = date used for `date_created` but removed from the URL; `none` = ignored. |
+| `date_prefix` | `keep` / `strip` / `none` | A date at the start of a filename (`2026-06-24-my-post` or `2026-06-24 My Post`). `keep` = date stays in the URL; `strip` (default) = removed from the URL; `none` = legacy name for `strip`. In every mode the date becomes `date_created` when the note has none. Folder names are never touched. |
+| `date_redirect` | `true` / `false` | Default `true`: the other form of a dated URL (without the date under `keep`, with it under `strip`) 301-redirects to the real one, so links shared in either form work. |
 | `mount_path` | string | Mount the whole site under a subpath (`/marbles/`). Empty = root. |
 
 **Backwards-compat:** the reader still honors the legacy flat keys
@@ -150,6 +152,25 @@ versions, folder indexes, or home). Opt out per page with `comments: false`.
 JS, `customCSS` can be built dynamically from the page's theme tokens
 (`getComputedStyle(document.documentElement).getPropertyValue('--accent-color')`, etc.) so the
 widget matches whatever theme/page it renders on. Selectors come from FastComments' docs.
+
+## Addresses vs. doors (settled 2026-09-18)
+
+This contract defines **addresses**: where a thing lives — `⟨haus⟩.bloob.haus/⟨folders⟩/⟨file⟩`.
+A public thing's address *is* its share URL. The cloud adds a second kind of URL, a **door**: a
+token link such as `post-office.bloob.haus/mail/⟨id⟩#⟨key⟩` that opens one item without saying
+where it lives. Three rules keep the two from tangling:
+
+- **A door never reveals an address** (the Google-Drive rule): a letter shared out of a locker
+  does not expose the locker. An item may have many doors; a `share_links` row is a door.
+- **The shape never appears in a URL.** URLs carry names (folders, files, ids); the shape lives in
+  the file's frontmatter. `/mail/` and `/lockers/` are reserved *folder names* in the post-office
+  haus that happen to say what they hold — naming, not a type system. A file named `insight123`
+  may be a `marble`; sharing it shares its path.
+- **Addressing is orthogonal to access.** Subdomain vs. path says *where*; capability (token),
+  identity (sign-in), or password says *who may open*. A private thing on a public haus is a
+  readable address plus a door (`leons.bloob.haus/marbles/secret-article-1` + sign-in), or an
+  unguessable address that *is* the secret. Both are valid; the mechanism lives in
+  `bloob-haus-cloud/docs/architecture/letters-and-envelopes.md`.
 
 ## Deferred / related (not in this contract yet)
 

@@ -9,6 +9,54 @@ a {
   overflow-wrap: break-word;
 }
 
+/* ── Internal links ───────────────────────────────────────────────────────────
+   _base/assets/js/internal-links.js adds .internal-link to plain links that
+   point at another page of the site (or another *.bloob.haus page).
+
+   They read as ordinary inline links. They used to be inline-flex pills with
+   an icon, which sat higher than the text around them and made their line
+   taller; now nothing here touches display, padding, border, line-height or
+   vertical-align, so the line keeps its height and baseline.
+
+   Hover draws a thin pill from background + box-shadow + outline only. None of
+   those take up space, so nothing moves. Themes set the colours:
+     --internal-link-hover-bg    pill fill
+     --internal-link-hover-ring  1px ring around it (transparent = none)
+
+   Every selector is wrapped in :where(), so it has no specificity: a theme
+   rule, or a component that happens to be a link (a tag badge, a button),
+   always wins without a fight. */
+:where(a.internal-link) {
+  border-radius: 999px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-color 0.15s, box-shadow 0.15s, outline-color 0.15s;
+}
+
+:where(a.internal-link:hover) {
+  --internal-link-pill: var(
+    --internal-link-hover-bg,
+    color-mix(in srgb, var(--accent-color, currentColor) 12%, transparent)
+  );
+  background-color: var(--internal-link-pill);
+  box-shadow: 0 0 0 0.18em var(--internal-link-pill);
+  outline: 1px solid var(--internal-link-hover-ring, transparent);
+  outline-offset: 0.18em;
+  text-decoration: none;
+}
+
+/* Shape icons, when a site turns them on (features.link_icons). Text-sized and
+   on the baseline, so they add width but never height. */
+:where(.internal-link__icon) {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin: 0 0.25em 0 0;
+  vertical-align: -0.15em;
+  object-fit: contain;
+  border-radius: 0;
+}
+
 /* ── Share bar ────────────────────────────────────────────────────────────────
    MECHANICS live here; the LOOK lives in each theme's main.css.
 
@@ -109,7 +157,8 @@ a {
    post-action confirmation — "Copied!" behind a collapsed label would be invisible. */
 .share-bar .share-btn.is-open .share-btn__label,
 .share-bar .share-btn--confirmed .share-btn__label,
-.share-bar .share-btn:focus-visible .share-btn__label {
+.share-bar .share-btn:focus-visible .share-btn__label,
+.share-bar.is-open .share-btn__label {
   max-width: 12rem;
   opacity: 1;
   margin-left: 0.42em;
@@ -117,7 +166,8 @@ a {
 
 .share-bar .share-btn.is-open,
 .share-bar .share-btn--confirmed,
-.share-bar .share-btn:focus-visible {
+.share-bar .share-btn:focus-visible,
+.share-bar.is-open .share-btn {
   padding-right: 0.95em;
   z-index: 2;
 }
@@ -126,8 +176,10 @@ a {
    a phone can never leave a button latched in its hover state. */
 @media (hover: hover) {
   /* Approaching the bar un-squishes it — the stack spreads into a row. */
-  .share-bar:hover .share-btn { margin-left: var(--share-btn-gap, 0.35rem); }
-  .share-bar:hover .share-btn:first-child { margin-left: 0; }
+  .share-bar:hover .share-btn,
+  .share-bar.is-open .share-btn { margin-left: var(--share-btn-gap, 0.35rem); }
+  .share-bar:hover .share-btn:first-child,
+  .share-bar.is-open .share-btn:first-child { margin-left: 0; }
 
   .share-bar .share-btn:hover .share-btn__label {
     max-width: 12rem;
@@ -139,4 +191,18 @@ a {
     padding-right: 0.95em;
     z-index: 2;
   }
+}
+
+/* ── License line ─────────────────────────────────────────────────────────────
+   partials/license-line.njk: one quiet line in the footer of a page that has a
+   license ("Shared under CC BY-NC-SA 4.0"). It takes the footer's own font and
+   colour; :where() keeps it free of specificity so a theme can restyle it. */
+:where(.license-line) {
+  margin: 0.4em 0;
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+:where(.license-line a) {
+  color: inherit;
 }

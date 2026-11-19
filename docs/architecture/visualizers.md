@@ -3,6 +3,19 @@
 **Status:** Modular architecture with auto-discovery. Four activation methods including `:::` containers. `data-vis-raw` pipeline fully implemented (2026-03-23).
 **Location:** `docs/architecture/`
 **Updated:** 2026-07-20
+> **These three documents are a living triad, still growing.** `ontology.md` (what a shape *is*),
+> `shapes.md` (the contract), `visualizers.md` (the renderer standard) — read together, never one
+> alone. Most of what is written here has serious empirical roots, but **they can and do diverge
+> from each other and from the code**, and not every line should be trusted as settled. They are
+> ground for philosophical *and* practical conversation.
+>
+> **Standing invitation, to a person or an AI reading this:** if you notice a contradiction, or a
+> larger pattern nobody has named yet, **say so and propose a change to these docs in the same
+> session** — do not quietly route around it. Precedent, 2026-09-20: this document specified
+> `renderClosed(envelope, state)` while its own sealing rule said a closed state must be drawn
+> "from the envelope alone". The code had followed the rule; the signature was the slip; the doc
+> was corrected. That is the expected motion, in either direction.
+
 
 Visualizers are the core of Bloob Haus - "little machines" that transform text into visual/interactive experiences. This document describes how the visualizer system works.
 
@@ -136,7 +149,12 @@ needs a pure renderer.
 
 **Conforming** (`parser.js` + `renderer.js`): `card-preview`, `image-grid`, `image-text`,
 `photo-grid`, `quotes-stack`, `scene-nav`, `services`, `slideshow`, `testimonials`,
-`heading-and-paragraph`, **`collection`** (2026-07-27).
+`heading-and-paragraph`, **`collection`** (2026-07-27). `foldable` (2026-10-26) produces all
+of its markup at build time from pure functions too (`fold-headings.js`, `peek.js`); its
+`browser.js` only opens folds around a `#hash` target.
+
+`letter` (2026-11-16) is pure throughout: `renderer.js` (the envelope) and `paper.js` (the sheet);
+it has no `parser.js` because its data is the note's frontmatter and body, handed in by the host.
 
 **Not yet conforming, generates content** — `folder-preview`, `circular-nav`, `fridge-magnets`,
 `tags`, `graph`. Tracked as **TECH-DEBT #40**. Convert each when next touched; do not retrofit
@@ -317,7 +335,7 @@ For the parser/renderer to be shareable across web, Obsidian plugin, and webapp 
 
 1. **`scripts/utils/inject-container-raw.js`** — called from `preprocess-content.js` after link resolution. Scans processed markdown line-by-line for `:::` blocks, extracts the inner content, base64-encodes it, and injects `_raw="<base64>"` onto the `:::` opener info string.
 
-2. **`eleventy.config.js` `markdownItContainer` renderer** — parses the info string (including `_raw`), deletes it from `data-vis-settings`, and emits it as a separate `data-vis-raw` attribute on the `<section>`.
+2. **`scripts/utils/section-container.js`** (called by the `markdownItContainer` renderer in `eleventy.config.js`) — parses the info string (including `_raw`), deletes it from `data-vis-settings`, and emits it as a separate `data-vis-raw` attribute on the `<section>`. Escapes the class; keeps settings as single-quoted JSON with `' < > &` as `\u` escapes so the consumers' regex + `JSON.parse` keep working; drops (with a warning) a `_raw` that is not base64.
 
 3. **`lib/visualizers/[name]/index.js`** — reads `data-vis-raw`, base64-decodes to raw markdown, passes to `parser.js`.
 
@@ -458,9 +476,10 @@ export const type = "file-scope";
 export const name = "shape-name";
 
 // Required: called by preprocess-content.js step 6e.6
-export async function renderFilescope(settings, body) {
+export async function renderFilescope(settings, body, { frontmatter }) {
   // settings: parsed YAML from ::: settings block
   // body: remaining markdown body after settings block removed
+  // frontmatter: the page's own frontmatter (2026-11-16), for a shape that draws from it
   // returns: HTML string that replaces the entire page body
 }
 ```
@@ -479,6 +498,9 @@ export async function renderFilescope(settings, body) {
 
 ```
 lib/visualizers/                        ← Source of truth for all visualizer code
+├── _utils/                             ← Shared pure helpers (see "Shared helpers" below)
+│   ├── bg-color.js                     ← bg=/color= fence params → class or inline style
+│   └── ref-encoding.js                 ← safeDecode / encodeRef for shapes carrying image refs
 ├── checkbox-tracker/                   ← Runtime visualizer (auto-detect)
 │   ├── manifest.json                   ← Metadata, activation method, settings schema
 │   ├── schema.md                       ← Human + AI readable input documentation
@@ -536,6 +558,155 @@ eleventy.config.js                      ← addTransform for post-render HTML mo
 
 > **Dev workflow note:** `bundle-visualizers.js` only runs as part of the full build (`build-site.js`). After adding a new visualizer during a dev session, run `node scripts/bundle-visualizers.js` manually before expecting the JS bundle and `visualizers.json` manifest to be updated.
 
+## Two optional hooks in `index.js` (2026-10-26)
+
+Both added for the `foldable` shape; both are opt-in exports, so no other shape changes.
+
+- **`export function markdownItPlugin(md, { siteConfig })`**: for a shape that changes how
+  markdown itself renders rather than replacing a block. `eleventy.config.js` registers every
+  visualizer that exports one, after its own plugins (footnotes, attrs, `:::` containers), and
+  hands it the site config so a site can opt out with a feature flag. `foldable` uses it for
+  `## > Heading`. Prefer it over a regex pass in the preprocessor whenever the syntax has to
+  respect code blocks, blockquotes and `:::` boundaries: markdown-it has already parsed those.
+- **`export const transformOrder = <number>`**: build-time transforms run in ascending order
+  (default `0`, stable sort, so shapes without it keep their discovery order). Use it only when
+  a transform reads markup another shape's transform writes: `foldable` (`100`) fills its peek
+  row from the cards `collection` has drawn. Before this, transform order was `readdir` order,
+  which is alphabetical on macOS but not guaranteed on Linux CI.
+
+## One home for drawing code; the post office carries a copy (2026-11-16)
+
+The cloud app (`bloob-haus-cloud`, the post office) is the third host of these renderers, and it
+needs them on its server too (link previews, the envelope in the first HTML). It does not load
+them from `bloob.haus/visualizers` while running: its deploy **copies** a shape's pure files in,
+runs its tests and type check on them, and ships the copy (reasons: cloud `docs/DECISIONS.md`,
+2026-11-16). So this repo is the only place drawing code is edited. `letter` is the first.
+
+What that asks of a shape whose files are copied:
+
+- The copied files (`renderer.js`, `paper.js`, `styles.css`) import nothing from this repo: no
+  `_utils/`, no `scripts/`, no engine. A bare package both repos have (`markdown-it`) is fine.
+  `letter.test.js` checks it.
+- They are typed with JSDoc under `// @ts-check`, so the cloud's TypeScript checks them as they are.
+- Whatever only this repo's hosts need (the editor's `renderNote`, the builder's `renderFilescope`)
+  goes in `index.js`, which is not copied.
+
+**`renderNote({ data, body })`**, an optional export of `index.js`: a shape that draws a whole note
+itself, from its frontmatter and body, and is not a template shape. The visualizer editor uses it
+for that shape's page (`createShapeNoteRenderer` in `lib/visualizer-editor/render-note.js`). The
+site builder reaches the same drawing through `renderFilescope`, which since 2026-11-16 is handed
+the page's frontmatter as a third argument, `renderFilescope(settings, body, { frontmatter })`;
+shapes that take two arguments are unaffected. What it returns goes through markdown-it next,
+which ends an HTML block at an empty line, so the HTML must hold none (the letter writes an empty
+line in a code block as `&#10;`).
+
+## Appear whole (Leon, 2026-11-04)
+
+A visualizer's object appears **as one finished piece, never layer by layer**. A marble must not
+show its bare picture and then gain its glass; a vinyl sleeve must not show a flat cover and then
+turn 3D; a room marble must not show its glare over an empty spot.
+
+How: a shape whose look is assembled from layers sets `"assembles": true` in its manifest. While
+script is starting, the engine holds that object invisible; the shape's `browser.js` calls
+`BloobObjects.assembled(el)` once its look is complete (or once its finished static picture has
+loaded, when the live layer can't run), and the object fades in at once. Its opening waits for that
+too. A CSS fallback shows it after 3 s anyway, so a slow phone or a script error never leaves it
+hidden, and without script it shows straight away as plain HTML (the no-JS rule still holds).
+
+**A shape that is not an engine object keeps the same promise itself** (2026-11-16, the letter).
+The engine's waiting rule is for `.bloob-object[data-assembles]` on pages that carry the engine's
+head script. A letter with `state: sealed` is plain HTML that its `browser.js` folds shut, on any
+theme, so its own stylesheet does the waiting: a one-line script inside the letter marks it
+before paint (`bh-letter--js`), it stays unseen until `browser.js` adds `is-assembled` (and calls
+`BloobObjects.assembled(el)` when the engine is on the page), and the same 3 s fallback shows it,
+unfolded, if the script never comes.
+
+**In a peek, the finished closed look is the whole piece** (2026-11-14, Leon's feedback that a
+peek was slower than going to the page). Per-page loading means the host page may not carry the
+peeked shape's `browser.js` at all (the homepage room has no `marble.js`), so nothing would ever
+call `assembled` and every peek sat out the 3 s fallback. `peek.js` therefore marks the peeked
+object assembled once its closed-look picture (`closedLookReady`) and the peeked page's borrowed
+stylesheets have loaded, then opens it. When the shape's script is present its live layer still
+replaces the baked look afterwards, which it does without a jump.
+
+## The engine — `lib/visualizers/_engine/` (2026-11-02)
+
+The one home for what every visualizer needs and should never rewrite: filling a template shape
+from a note (`blanks.js`, `fill.js`, `render.js`), and in the browser the shared toolbox (opening,
+remembering, the 0-to-1 progress, the light, sharing). Its underscore keeps it out of visualizer
+discovery, like `_utils/`. The engine and the new-format visualizers import nothing outside their
+own family, so they can run in every host and be lifted out whole; a test enforces it.
+
+**A visualizer has five layers, plus an optional sixth**, one file and one workbench pane each:
+*reads* (blanks from the note, or `parser.js`), *draws* (`open.html` / `closed.html`, or
+`renderer.js`), *does* (toolbox switches in `manifest.json`; own `browser.js` only for its own
+behavior), *looks* (`style.css`, tokens only), *promises* (`manifest.json` + `schema.md`), and
+*writes* (an optional `builder/`, the GUI people use to write a note for it). Template shapes need
+no `index.js`: the engine supplies the plumbing that today's visualizers each copy.
+
+## Shared helpers — `lib/visualizers/_utils/`
+
+**Status: in use by 7 shapes across 2 modules (2026-08-15).**
+
+Pure helpers that more than one shape needs live in `_utils/`, not copied per shape and not
+imported shape-to-shape. It is a folder of functions, not a visualizer.
+
+**The underscore prefix is what marks a folder as "not a shape"**, mirroring the vault's `_bloob-*`
+system-file convention. `bundle-visualizers.js` skips underscore-prefixed directories — until
+2026-08-16 it did not, so `_utils` was enumerated as a visualizer and written into
+`visualizers.json` as a manifest-less entry, which this document defines as *always loaded*. A
+phantom always-loaded shape also skews `audit-visualizer-detection.js`. Pinned by
+`tests/build/visualizer-discovery.test.js`.
+
+| Module | Does | Used by |
+|---|---|---|
+| `bg-color.js` | `bg=` / `color=` fence params → CSS class or inline style | `folder-preview`, `heading-and-paragraph`, `image-text`, `services`, `slideshow`, `testimonials` |
+| `ref-encoding.js` | `safeDecode` / `encodeRef`: the stored-decoded / emitted-encoded contract | `scene-nav`, `garden`, `collection` (`safeDecode` only, for list targets) |
+
+### What belongs here
+
+**Pure functions only** — no DOM, no `fs`, no Node built-ins, no markup, no CSS. These files are
+inlined into **browser** bundles, so a Node import breaks the bundle at build time.
+
+The bar is a **shared contract**, not merely shared code. Both current modules exist because two
+shapes must agree on an answer, and a second copy would silently drift:
+
+- `bg-color.js` — six shapes must map `bg=green` to the same class, or a page mixes palettes.
+- `ref-encoding.js` — scene-nav and garden must agree on when a ref is decoded vs encoded, or one
+  shape's `%20` is another's literal space.
+
+Apply the Rule of Three, and prefer a **shape-local** helper until a *second shape* actually needs
+it. `encodeGotoRaw` stays in `scene-nav/decode.js` because no other shape has a `goto:` grammar;
+only the two functions garden also needed moved out.
+
+### Do NOT import shape-to-shape
+
+`garden/parser.js` importing `scene-nav/decode.js` would couple two unrelated shapes and make
+neither removable. If two shapes need the same thing, it goes in `_utils/` — that is the whole
+reason the folder exists.
+
+### The cost, stated plainly
+
+`shapes.md` describes a shape as **"a folder you can zip, share, fork"**, and the user-authored /
+marketplace direction depends on that being true. **A shape that imports from `_utils/` is no longer
+such a folder** — copy it out of this repo and it fails on a missing relative import.
+
+That is an acceptable trade for **built-in** shapes and a real constraint for third-party ones. When
+vault-authored shapes (`_bloob-shapes/`) actually ship, `_utils/` becomes a **platform API surface**
+and must be either provided by the runtime under a stable import specifier, or declared off-limits to
+third-party shapes. Decide that before the folder grows — it is cheap now at two modules and
+expensive at twenty. Tracked with the user-authored-shapes work in `shapes.md`.
+
+### The Node-side twin
+
+`scripts/utils/safe-decode.js` duplicates `ref-encoding.js`'s `safeDecode` **on purpose**. The
+pipeline (`scripts/**`) is Node-only and `lib/visualizers/**` is browser-bundled; neither may import
+the other. Two implementations, each documented as to why, is correct here — one shared copy is not
+reachable from both sides.
+
+---
+
+
 ---
 
 ## CSS Token Standard
@@ -567,6 +738,12 @@ eleventy.config.js                      ← addTransform for post-render HTML mo
 3. `theme.min.css` may contain hardcoded values (it is a legacy/vendor file) — do not add to it.
 4. If a visualizer needs a color not in the standard tokens, add the token to `main.css` first (with a sensible default), then use it in `styles.css`.
 5. `browser.js` that reads colors at runtime should read from `getComputedStyle(document.documentElement).getPropertyValue('--accent-color')` — same source of truth.
+
+6. **A shape may carry look tokens of its own, each with a fallback**, when its look is not the
+   theme's to choose. The note's paper does (`--object-paper`, `tokens.md`), and so does the
+   letter (`--bh-*`: its colour is its sender's, and the same stylesheet must draw it in the post
+   office, which has no theme). The literal values then live only in the fallbacks, and a host
+   changes the look by setting the tokens. This is the one exception to rule 1.
 
 ### Example
 

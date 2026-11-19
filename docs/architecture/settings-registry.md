@@ -8,7 +8,9 @@
 
 **User-facing settings** live in `_bloob-settings.md` in each content repo. This file is the *developer* reference: what exists, what scope it has, which themes implement it, and HOW to wire it into a new theme.
 
-**Last Updated:** 2026-07-20
+**Not built yet:** `docs/settings-backlog.md` (shared with `../bloob-haus-cloud`).
+
+**Last Updated:** 2026-11-14
 
 ---
 
@@ -28,15 +30,18 @@ These settings work identically across every theme. They are part of the Bloob H
 | `bloob-shape` | string | — | **Primary identity + rendering key.** Names the page's shape and drives (a) layout selection, (b) `renderFilescope()` body rendering (`lib/visualizers/[name]/index.js`), and (c) identity — banner image/text, graph icon, display name — looked up in `_bloob-shapes.md`. Identity resolves via `resolveIdentityKey` (precedence below). Shape config goes in a `::: settings` block in the body, not frontmatter. See `docs/architecture/shapes.md` + `visualizers.md`. |
 | `bloob-type` | string | — | **Legacy identity alias** for `bloob-shape` (older vaults; registry `_bloob-types.md`). Still accepted, and **wins for identity when explicitly set** — precedence `bloob-type` > `bloob-object` > `bloob-shape` — so a page may render as one shape while identifying as another. New content should use `bloob-shape:`. |
 | `bloob-object` | string | — | Oldest legacy identity alias (registry `_bloob-objects.md`). Same precedence rules as `bloob-type`. New content should use `bloob-shape:`. |
-| `description` | string | — | Page-level SEO description for `<meta name="description">` and OG tags. Falls back to `site.description` when absent. Only set when the page deserves a distinct description. |
+| `description` | string | — | Page-level SEO description for `<meta name="description">` and OG tags. When absent, the build writes an automatic `seo_description` (subtitle + first prose, ~155 characters; `scripts/utils/seo-description.js`) and the head uses that, then `site.description`. Only set when the page deserves a distinct description. |
+| `seo_description` | string (build-generated) | — | Not authored. Written by the preprocessor on every page; read only by `_base/partials/seo-meta.njk` for the meta, `og:` and `twitter:` descriptions. Never copied into `description`, which melt and warm-kitchen render on the page. |
 | `author` | string | — | Attribution name rendered as "By [author]" below the page title. |
 | `date_created` | string | — | Creation date (`YYYY-MM-DD`). Available to every theme via the data cascade; rendered as a pill only where a theme wires it up. Written by the bloob-haus Obsidian plugin. |
 | `date_updated` | list of strings | — | Chronological list of significant-edit dates (`YYYY-MM-DD`). Appended by the Obsidian plugin. Available to every theme; the shared `dateFormat` filter accepts the array and formats the most recent entry (`{{ date_updated \| dateFormat }}`). Rendered only where a theme opts in. |
+| `unlisted_folders` (site, `_bloob-settings.md`) | list | `[]` | Folders (vault-relative, e.g. `[clients]`) whose pages are **always** unlisted, whatever their own YAML says (even `public`): `_bloob_unlisted`, so noindex, no sitemap/search/RSS/graph/post-card entry, no third-party snippets. The folder gets no auto-generated index page (`/clients/` answers 404). Raw files in it (HTML, PDFs, images) get an `X-Robots-Tag: noindex, nofollow` `_headers` rule at build (`addFolderNoindexHeaders`, build-site step 7.1). A listed folder missing from the vault prints a build warning. Rule: `isPageUnlisted` in `scripts/utils/unlisted-folders.js`. Vault wins over `sites/*.yaml`. Added 2026-10-29. |
 | `visibility` | string | — | Per-page visibility shorthand. `private` = excluded from build entirely. `unlisted` = built but hidden from all indexes (RSS, search, sitemap, noindex). Works in any `publish_mode`. Sets `_bloob_unlisted: true` internally. |
 | `website_status` | string | depends on `publish_by_default` | Used when `publish_mode: status_field`. `draft` = excluded from build. `unlisted` = built, hidden from all indexes. `archived` = built, Google-indexable, hidden from listings. `public` = fully published. Absent field = excluded if `publish_by_default: false`, treated as public if `true` (default). |
 | `transclusion_indicators` | bool | `true` (or site-wide default) | When `false`, `![[embeds]]` are inlined seamlessly with no wrapper div. When `true`, embeds are wrapped in `<div class="transclusion-embed">` so themes can add a visual indicator. Overrides `features.transclusion_indicators` from `_bloob-settings.md`. |
 | `comments` | bool | `true` | When `false`, suppresses the comment embed (`fast-comments-embed` fence) on this page. No effect unless the site has a `fast-comments-embed` snippet. |
 | `visitor_count` | bool | site-wide `show_visitor_count` | Per-page override for the GoatCounter visitor count, in **both** directions: `false` hides it on a page whose site shows it, `true` shows it on a site that is otherwise off. Cannot conjure a counter — the site still needs a `goat-counter-tracking` snippet, **and** "Allow using the visitor counter" must be enabled in the GoatCounter site's own settings (it defaults to off; without it the endpoint answers 403 and the widget stays hidden). Guarded by `tests/visitor-count-partial.test.js`. |
+| `license` | string | site-wide `license` | This note's own license, overriding the site's (see "License" below). `license: none` takes the license away on this page: no line, no link, nothing in the JSON-LD. Written the same ways as the site-wide value. Resolved by the `pageLicense` filter (`eleventy.config.js`, `scripts/utils/license.js`); an unrecognised value warns once per spelling at build. Added 2026-11-14. |
 | `bloob-page-id` | string | derived from URL | Override the canonical page ID (lowercased). Primary use: after moving/renaming a note, set this to its **old** ID so the FastComments thread stays attached. See `docs/architecture/urls-and-ids.md`. |
 
 #### Optional display fields (not in standard YAML, no UI prompt)
@@ -81,17 +86,19 @@ Tags can be in frontmatter (`tags: [private]`) or inline in the body (`#private`
 | Concern | Mechanism | Automatic? |
 |---------|-----------|------------|
 | Excluded from RSS | `eleventyExcludeFromCollections: true` via `eleventyComputed.js` | ✓ Universal |
-| `noindex` meta | `_base/partials/head.njk` checks `_bloob_unlisted` | ✓ Universal |
+| `noindex` meta | `_base/partials/robots-meta.njk` checks `_bloob_unlisted`; every theme head reaches it through `_base/partials/seo-meta.njk` (tested) | ✓ Universal |
+| No third-party code | `_base/partials/site-snippets-head.njk`, `site-snippets-footer.njk`, `comments.njk`, `visitor-count.njk` render nothing when `_bloob_unlisted` (tested; a scan test keeps themes from reading snippets elsewhere) | ✓ Universal |
+| SEO head tags | `_base/partials/seo-meta.njk`: title, description, canonical, robots, Open Graph, Twitter. Theme heads set `seo_title_sep` (melt `" · "`) and `seo_home_uses_page_title` (melt, alter-engineers: the homepage's own `title:` becomes its tab title; off elsewhere) before including it | ✓ Universal |
 | Excluded from pagefind | Layout must check `_bloob_unlisted` and swap `data-pagefind-body` → `data-pagefind-ignore` | Per-theme obligation |
-| Excluded from sitemap | `pages/sitemap.njk` must filter `_bloob_unlisted` entries | Per-theme obligation |
+| Excluded from sitemap | `_base/pages/sitemap.njk` filters `_bloob_unlisted` entries; themes may not ship their own (tested) | ✓ Universal |
 
 **Theme implementation status:**
 | Theme | noindex | pagefind-ignore | sitemap filter |
 |-------|---------|-----------------|----------------|
 | `alter-engineers` | ✓ | ✓ | ✓ |
-| `marbles-pouch` | ✓ | ✓ | — (no sitemap) |
-| `warm-kitchen` | ✓ | ✓ | — |
-| `melt` | ✓ | ✓ | — |
+| `marbles-pouch` | ✓ | ✓ | ✓ (base) |
+| `warm-kitchen` | ✓ | ✓ | ✓ (base) |
+| `melt` | ✓ (since 2026-10-25; its head had no unlisted check before) | ✓ | ✓ (base) |
 
 > **Hosting unlisted/client-facing content at an unguessable URL** (security by obscurity, raw HTML
 > passthrough files, third-party-dependency leak vectors): see
@@ -109,7 +116,8 @@ split between `_bloob-settings.md` and `sites/*.yaml`. Full spec: **`docs/archit
 url:
   base: https://leons.bloob.haus   # subdomain or custom domain
   case: preserve                   # preserve | lower
-  date_prefix: keep                # keep | strip | none
+  date_prefix: keep                # keep | strip   (none = old name for strip)
+  date_redirect: true              # the other form of a dated URL forwards to the real one
   mount_path: ""                   # optional subpath, e.g. "marbles"
 ```
 
@@ -117,12 +125,113 @@ url:
 |-----|--------|---------|-------------|
 | `url.base` | full URL | `site.url` | Site origin. |
 | `url.case` | `preserve` / `lower` | `permalinks.strategy` | `lower`→slugify (lowercase), `preserve`→preserve-case. |
-| `url.date_prefix` | `keep` / `strip` / `none` | `features.date_from_filename` + `date_prefix_slugs` | Leading `YYYY-MM-DD-` handling: keep in URL / strip from URL / ignore. |
+| `url.date_prefix` | `keep` / `strip` (default) / `none` | `features.date_from_filename` (keep) / `date_prefix_slugs` (strip) | A date at the start of a filename (`2026-06-24-my-post` or `2026-06-24 My Post`): `keep` = stays in the URL, `strip` = removed. `none` = legacy name for `strip` (since 2026-11-10; Eleventy always stripped it). The filename date fills a missing `date_created` in every mode — universal, not a setting. Read back through `resolveDatePrefixMode()` (`scripts/utils/date-prefix.js`). |
+| `url.date_redirect` | `true` (default) / `false` | `features.date_redirects` | The other form of every dated URL (undated when `keep`, dated when `strip`) gets a 301 to the real one in Cloudflare's `_redirects` (`scripts/utils/date-redirects.js`, written after Eleventy by build-site step 7.2 and `dev-local --build`). Skipped when the alias is another page's URL, when the page sets its own `permalink`, or when two dated notes share one alias. Added 2026-11-10. |
 | `url.mount_path` | string | `mount_path` | Mount site under a subpath. Empty = root. |
 
 Legacy flat keys (`permalink_strategy`, and `sites/*.yaml` values) still work; the `url:` block
 wins when present. The derived **canonical page ID** = lowercased `host + path` — used as the
 FastComments `urlId` and exposed as `<meta name="bloob-page-id">`. See the contract doc.
+
+#### License (`license:`)
+
+What others may do with the site's writing. One value, two doors: `license:` in `_bloob-settings.md`
+or `site.license` in `sites/*.yaml` (the vault wins, `license: none` included). A note's own
+`license:` frontmatter overrides it for that page (see Per-Page Frontmatter).
+
+```yaml
+license: CC BY-NC-SA 4.0
+```
+
+| Written as | Becomes |
+|------------|---------|
+| `CC BY-NC-SA 4.0`, `CC-BY-NC-SA-4.0` (SPDX), `cc by-nc-sa 4.0`, `CC BY NC SA 4.0`, `Attribution-NonCommercial-ShareAlike 4.0 International`, the deed URL | **CC BY-NC-SA 4.0** → `https://creativecommons.org/licenses/by-nc-sa/4.0/`. All six CC licenses (BY, BY-SA, BY-ND, BY-NC, BY-NC-SA, BY-NC-ND), versions 2.0, 2.5, 3.0, 4.0. No version written = 4.0. |
+| `CC0`, `CC0 1.0`, `CC0-1.0`, `CC0 1.0 Universal` | **CC0 1.0** → `https://creativecommons.org/publicdomain/zero/1.0/` |
+| anything else (`All rights reserved`, `MIT`, a typo) | shown as written, with no link, and a build warning (`[assemble]` for the site's, `[license]` for a note's) |
+| `none` (or empty) | no license |
+
+Parsed by `scripts/utils/license.js` (`parseLicense`, `pageLicense`). The site's value is parsed once
+into `site.license` (`{ name, url, known }`) by `assemble-src.js`.
+
+Where it shows, on every page that has one:
+
+| For | What | Where |
+|-----|------|-------|
+| People | One quiet line, "Shared under CC BY-NC-SA 4.0" linking to the deed ("License: …" with no link when unrecognised). No em dashes. | `_base/partials/license-line.njk`, included by each theme's footer; `.license-line` in `_base/assets/css/base.css` |
+| Machines | `<link rel="license" href="…">` (only when there is a URL) | `_base/partials/seo-meta.njk` |
+| Machines | `license` on the page's `WebPage` node, in the page's one JSON-LD block (merged with the `structured-data` fence into one `@graph`, never a second block). An unrecognised license is a named `CreativeWork`. Not on unlisted pages. | `_base/partials/structured-data.njk`, `scripts/utils/structured-data.js` |
+
+**Theme implementation status:**
+| Theme | footer line | head (`seo-meta`) | JSON-LD |
+|-------|-------------|-------------------|---------|
+| `bloob-haus-26` | ✓ | ✓ | ✓ |
+| `marbles-pouch` | ✓ | ✓ | ✓ |
+| `melt` | ✓ | ✓ | ✓ |
+| `warm-kitchen` | ✓ | ✓ (`_base` head) | ✓ |
+| `alter-engineers` | ✗ (the client's own footer) | ✗ (its head doesn't use `seo-meta` here) | ✓ (through `site-snippets-head.njk`) |
+
+Before 2026-11-14 the bloob-haus-26 and marbles-pouch footers printed "CC BY-NC-SA 4.0" whenever
+`footer_text` was empty: a license the site owner never chose. That fallback is gone; a license
+comes only from this setting. Leon's leons site: `license: CC BY-NC-SA 4.0`, what the old
+leonsanten.info marbles carried ("License for all original work").
+
+#### What AIs may do (`ai:`)
+
+Three switches, written to the site's `robots.txt` (SET7, Leon 2026-11-01). Every site gets a
+`robots.txt`, with or without a sitemap.
+
+| Switch | Default | Means | Agents (from each company's docs) |
+|--------|---------|-------|-----------------------------------|
+| `read_links` | `yes` | an AI opens a page because someone asked it about that page | ChatGPT-User, Claude-User, Perplexity-User, Meta-ExternalFetcher, Amzn-User, MistralAI-User, ExaUser, ElevenlabsBot |
+| `search` | `yes` | AI search indexes pages so its answers can find and cite them | OAI-SearchBot, Claude-SearchBot, PerplexityBot, Meta-WebIndexer, Amzn-SearchBot, MistralAI-Index, DuckAssistBot, ExaSearchBot (+ -Images) |
+| `train` | `no` | pages may be collected to train AI models | GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, CCBot, Meta-ExternalAgent, Amazonbot, MistralAI-Training, ElevenlabsCrawler, Reflectionbot, Bytespider |
+
+The list lives in one data file, **`scripts/utils/ai-agents.yaml`**, each entry with the doc it comes
+from. Add an agent there (a test checks every entry has a company and a source, and that none is
+listed twice).
+
+How to write it. One line, any order, only what differs from the default:
+
+```yaml
+ai: read_links:yes, search:yes, train:no
+```
+
+**No space after the colons** on one line: YAML reads `ai: train: no` as broken and fails the whole
+file. So the nested form works too:
+
+```yaml
+ai:
+  train: no
+```
+
+and the settings reader repairs that one broken line rather than lose every setting in the file
+(`parseSettingsText` in `bloob-settings-reader.js`, with a warning). `ai: no` turns all three off,
+`ai: yes` all three on. Values: yes/no, true/false, on/off. Settable in `sites/*.yaml` (`ai:`) or
+`_bloob-settings.md`; each door only overrides the switches it writes, and the vault wins. Parsed by
+`scripts/utils/ai-access.js` into `site.ai`; `themes/_base/pages/robots.njk` writes it with the
+`robotsTxt` shortcode.
+
+What the robots.txt looks like (defaults): `User-agent: *` / `Allow: /` for everyone else, then one
+group per switch naming its agents with `Allow: /` or `Disallow: /` and a comment saying the
+switch's value, then `Sitemap:` when `features.show_in_search: yes`. On a `show_in_search: no` site
+it is still `Allow: /`: a crawler has to fetch a page to see its `noindex`.
+
+**Said plainly:**
+- **robots.txt is a request the big companies honour, not a lock.** Several user-initiated fetchers
+  say they may not follow it (ChatGPT-User, Perplexity-User, Meta-ExternalFetcher, Amzn-User); Google's
+  user-triggered fetchers ignore it entirely and have no token. Only a login keeps a page from an AI.
+- **Scrapers that ignore robots.txt are stopped only at Cloudflare**, by a WAF rule on the zone,
+  which is outside the builder. bloob.haus has one (Bytespider, HeadlessChrome, curl, l9scan,
+  Reflectionbot, empty user agents).
+- **Link previews are never blocked.** `facebookexternalhit` draws the preview when a page is shared
+  on Facebook, Instagram or Messenger, so it is in no group, whatever the switches say ("left alone"
+  in the data file). Blocking Meta's AI means Meta-ExternalAgent (train), Meta-WebIndexer (search)
+  and Meta-ExternalFetcher (read_links).
+- **`train: no` also keeps the site out of Gemini's grounding**: Google-Extended covers Gemini
+  training and Gemini answers that cite the web. Google Search and its AI Overviews come through
+  Googlebot and are not touched.
+- SEO scrapers (SemrushBot, AhrefsBot, DotBot, MJ12bot) are not AI and have no switch (parked,
+  `docs/implementation-plans/DECISIONS.md` 2026-11-14).
 
 #### Logo & Favicon
 
@@ -143,11 +252,29 @@ Both fields accept the same value formats:
 |-----|------|---------|-------------|
 | `default_shape` | string | — | Fallback shape for pages with no `bloob-shape:` in frontmatter. Governs their **layout** and, through it, their **commentability** (see `docs/architecture/shapes.md` → "Comments — a shape behavior"). Only influences layout selection — body rendering (`renderFilescope`) never fires from the default. If the named shape has no `lib/visualizers/[name]/` folder yet, it silently falls through to `page.njk` (which is commentable). This lets you declare a future shape name without breaking the build. Optional — an undeclared page is a valid "undefined pile" state. Example: `default_shape: marble`. |
 
+#### Internal links
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `features.link_icons` | bool | `false` | Put the linked page's shape icon in front of internal links (the pre-2026-10-26 look, now without the pill). Off by default: internal links render as plain inline links with a hover pill. A page can also turn icons on for one part by wrapping it in a `data-link-icons` container. See `docs/architecture/theme-standards.md` → "Internal links". |
+
+#### Inline tags (`#tag` in the text)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `features.inline_tag_links` | bool | `false` | An Obsidian-style `#tag` written in the text stays where it is and becomes a link to its tag page (`/tags/<tag>/`, class `tag-inline`; `scripts/utils/inline-tags.js`). Code, links and URLs are left alone, and only tags the page is counted under become links. On `bloob-haus-26` the page's foot then shows the frontmatter tags only (`yaml_tags`), so no tag is listed twice. Set in `sites/<name>.yaml`; on for marbles. |
+
+#### Folds (`## > Heading`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `features.foldable_headings` | bool | `true` | A heading that starts with `>` renders folded, one that starts with `^` renders open but foldable (the `foldable` shape, `lib/visualizers/foldable/schema.md`). `false` turns the markers off: they render as text. Theme look via `--fold-*` tokens in `main.css` (all optional). |
+
 **How to wire in a new theme:** No theme-level changes needed. Layout selection is handled entirely by the preprocessor — it reads the shape's `manifest.json.defaultLayout`, copies the shape's `layout.njk` into `src/_includes/layouts/`, and injects the `layout:` key into each page's frontmatter automatically.
 
 #### Shape identity registry (`_bloob-shapes.md`)
 
-`bloob-shape:` drives both a page's **rendering** and its **identity** (banner image/text, graph icon, display name), resolved by `resolveIdentityKey` (`scripts/utils/bloob-objects-reader.js`) with precedence `bloob-type` > `bloob-object` > `bloob-shape`. Per-shape identity metadata lives in a **`_bloob-shapes.md`** table at the vault root — the forward-facing successor to `_bloob-types.md` (`object_type` column) and `_bloob-objects.md`, all still read (first found wins, in that order). **The registry is OPTIONAL**: with no row, banner/icon fall back to the theme's `assets/objects/<shape>.png`; the registry only adds banner prose, a custom icon, and a display name. Scaffold: `themes/_base/_bloob-shapes.template.md`. Canonical detail: `docs/architecture/themes.md` → "Object Identity System".
+`bloob-shape:` drives both a page's **rendering** and its **identity** (banner image/text, graph icon, display name), resolved by `resolveIdentityKey` (`scripts/utils/bloob-objects-reader.js`) with precedence `bloob-type` > `bloob-object` > `bloob-shape`. Per-shape identity metadata lives in a **`_bloob-shapes.md`** table at the vault root — the forward-facing successor to `_bloob-types.md` (`object_type` column) and `_bloob-objects.md`, all still read (first found wins, in that order). **The registry is OPTIONAL**: with no row, banner/icon fall back to the theme's `assets/objects/<shape>.png`; the registry only adds banner prose, a custom icon, and a display name. Scaffold: `_bloob-shapes.md` in the vault template (github.com/LSanten/bloob-haus-vault-template). Canonical detail: `docs/architecture/themes.md` → "Object Identity System".
 
 | Column | Description |
 |--------|-------------|
@@ -177,16 +304,17 @@ Documented in full in `docs/architecture/themes.md` → "Baseline Features Contr
 | `features.search` | `true` | Pagefind search |
 | `features.rss` | `true` | RSS feed |
 | `features.per_page_visualizers` | `false` | Load only the visualizer CSS/JS a page uses (TECH-DEBT #4). Set in `sites/<name>.yaml`, not `_bloob-settings.md`. Shapes opt in via `detect` in their `manifest.json`; unannotated shapes always load. **Run `node scripts/audit-visualizer-detection.js --src=src-<name>` against a real build before enabling on a new site.** On: melt, marbles. Off: buffbaby, alter-engineers. |
-| `features.sitemap` | `true` | sitemap.xml |
+| `features.show_in_search` | `quiet` | How the site shows up in search engines. `yes` = `sitemap.xml` from `themes/_base/pages/` (all themes except alter-engineers), named in `robots.txt`. `robots.txt` itself is built for every site since 2026-11-14 (it carries the `ai:` switches). `quiet` = no sitemap; pages are found only if something links to them. `no` = keep the whole site out of search: every rendered page gets `noindex,nofollow` (`_base/partials/robots-meta.njk`, included by every theme head), and the build appends `X-Robots-Tag: noindex, nofollow` for every path to `_headers` (`scripts/utils/search-headers.js`, build-site step 7.1), which also covers what no head renders: magic machines, raw HTML, PDFs, images. Unlisted pages are never listed in any mode; the homepage and folder index pages always are (so per-site sitemaps can later be stitched into one). A bare `yes`/`no` read as `true`/`false` by an older YAML parser counts; any other value is `quiet`. Renamed from `features.invite_search_engines` (2026-10-25, same day it shipped). Settable in `sites/*.yaml` or `_bloob-settings.md` (the vault wins). On: marbles, buffbaby, melt (melt since 2026-10-28, set in its vault). Replaces the old `features.sitemap` / `features.robots_txt`, now ignored: every vault scaffold had them `true`, so they were never an active choice. |
 | `features.og_images` | `true` | OG preview image generation |
 | `features.tags` | `true` | Tag system |
 | `features.image_zoom` | `true` | PhotoSwipe click-to-zoom (see wiring guide below) |
 | `features.magic_machines` | `true` | Serve magic machine GUI tools at `/magic-machine/*`; disable for client/professional sites |
 | `features.transclusion_indicators` | `true` | Site-wide default for transclusion indicator display. When `false`, all `![[embeds]]` across the site are inlined seamlessly. Override per-page with `transclusion_indicators:` frontmatter. |
-| `features.date_from_filename` | `false` | Jekyll-style date-prefixed filenames. When `true`, a leading `YYYY-MM-DD-` on a filename supplies `date_created` when frontmatter omits one (frontmatter always wins), and the prefix **stays in the URL** (`/2026-06-24-my-post/`). Set in `sites/*.yaml`. Enabled for marbles. |
-| `features.date_prefix_slugs` | `false` | When `true`, strip the leading `YYYY-MM-DD-` from the URL (`2026-06-24-my-post.md` → `/my-post/`). Combine with `date_from_filename` to also pick up the date. Set in `sites/*.yaml`. Off for now. |
+| `features.date_from_filename` | — | Internal: what `url.date_prefix: keep` maps to. On its own in a `sites/*.yaml` (legacy) it still means "date stays in the URL". It no longer gates `date_created` — the filename date always fills a missing one (2026-11-10). |
+| `features.date_prefix_slugs` | — | Internal: what `url.date_prefix: strip` / `none` map to. Strip is also the default when neither flag is set. |
+| `features.date_redirects` | `true` | Internal: what `url.date_redirect` maps to. |
 
-> **Why both flags exist / how the URL is controlled:** Eleventy *natively* strips a leading `YYYY-MM-DD-` from `fileSlug`/`filePathStem` and treats it as the page date — so by default the date is dropped from the URL no matter what. When either flag is set, `preprocess-content.js` pins an explicit `permalink` (the index's computed URL) on date-prefixed, non-index files, which overrides Eleventy's native stripping: `date_from_filename` (without `date_prefix_slugs`) keeps the date in the URL; `date_prefix_slugs` strips it intentionally. This also guarantees the served URL matches what internal links resolve to.
+> **How the URL is controlled:** Eleventy *natively* strips a leading `YYYY-MM-DD-` from `fileSlug`/`filePathStem` and treats it as the page date — so left alone the date is dropped from the URL no matter what. `preprocess-content.js` pins an explicit `permalink` (the index's computed URL) on every date-prefixed, non-index file, so `url.date_prefix` really decides and the served URL matches what internal links resolve to. A date counts when it is a real date (month 01–12, day 01–31) followed by a hyphen **or spaces** — the Obsidian-style `2026-11-07 My Note` was missed before 2026-11-10, which let Eleventy silently strip the date on `keep` vaults.
 
 #### Graph Extra Fields
 
@@ -232,6 +360,7 @@ Raw HTML/JS snippets are pasted as **named fenced code blocks in the body** of `
 |-----------|-------------|-------|
 | `header-snippet` | `<head>` | Generic head injection (meta tags, `<link>`, verification tags) |
 | `goat-counter-tracking` | `<head>` | GoatCounter analytics — user pastes their own `<script data-goatcounter=…>`. Fires on every page including `/slug/embed/` versions (recorded under their natural `/…/embed/` path). |
+| `structured-data` | `<head>` | schema.org JSON-LD about who the site belongs to (Person, business). **JSON only**: parsed once into `site.structured_data` (`parseStructuredData` in `scripts/utils/structured-data.js`, skipped with a build warning when the JSON does not parse) and rendered by `_base/partials/structured-data.njk`, which `site-snippets-head.njk` includes, as `<script type="application/ld+json">` with `<` escaped. When a page has a license, the fence and the page go into **one** `@graph` (never a second block). Not on unlisted pages. Empty fence = off. The vault template suggests asking an AI to write it. Added 2026-10-29; merged with the page 2026-11-14. |
 | `footer-snippet` | before `</body>` | Generic end-of-body injection |
 | `embed-endofbody` | before `</body>` | Generic end-of-body injection |
 | `fast-comments-embed` | content-bottom of `page.njk` **and of the `article` shape** (via `partials/comments.njk`) | Comment embed (e.g. FastComments). Rendered after `</article>` on content pages only — not on embed versions, folder indexes, or home. On by default wherever the partial is included; opt out per-page with `comments: false`; renders nothing at all when this fence is absent. Use `{{ page_id }}` for the comment thread key (FastComments `urlId`). Guarded by `tests/comments-partial.test.js`. |
@@ -246,7 +375,7 @@ Raw HTML/JS snippets are pasted as **named fenced code blocks in the body** of `
 | `{{ page_full_url }}` | absolute page URL (preserve-case) | `site.url + page.url` |
 | `{{ page_title }}` | page title | `title` |
 
-Canonical author-facing scaffold: `themes/_base/_bloob-settings.template.md`. Design: `docs/implementation-plans/phases/phase-2/2026-07-03_snippet-injection-analytics.md`.
+Canonical author-facing scaffold: `_bloob-settings.md` in the **vault template**, its own repo since 2026-11-14 (github.com/LSanten/bloob-haus-vault-template, a GitHub template repo): what a new vault starts from, every setting written out at its default and explained (the license choices included). The builder holds the defaults in code; the template only writes them out, so when they disagree the code wins and the template is fixed. `themes/_base/` holds look and plumbing only (Leon, 2026-11-14: "I keep adding everything to the base theme when it is actually part of the template vault"). Design: `docs/implementation-plans/phases/phase-2/2026-07-03_snippet-injection-analytics.md`.
 
 ---
 
@@ -273,7 +402,7 @@ The image optimizer (`eleventy.config.js`) automatically wraps `/media/` images 
 <script type="module">
   import PhotoSwipeLightbox from 'https://cdn.jsdelivr.net/npm/photoswipe@5.4.4/dist/photoswipe-lightbox.esm.js';
   const lightbox = new PhotoSwipeLightbox({
-    gallery: 'article',           // scope to <article> wrapping page content
+    gallery: 'main',              // the whole page: every shape's images, not only <article>'s
     children: 'a.pswp-gallery__item',
     pswpModule: () => import('https://cdn.jsdelivr.net/npm/photoswipe@5.4.4/dist/photoswipe.esm.js'),
     wheelToZoom: true,
@@ -459,13 +588,23 @@ Settings that apply to specific visualizers regardless of theme.
 | `quotes[].date` | string | — | Display date |
 | `quotes[].color` | string | — | Card color variant (`red`, `white`, `green`) |
 
-### `collection` code fence
+### `collection` code fence and `:::collection` block
 
 Full reference: `lib/visualizers/collection/schema.md`. Settings added since:
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `placeholder` | string | `Search...` | Placeholder text for the collection's own filter input (added 2026-07-27) |
+| *(bullet list of links)* | list | none | A hand-written list in the block (`- [[PAGE]]`, `- [[PAGE\|Label]]`, `- [Title](marbles/PAGE.md)`, `- [Site](https://…)`) picks exactly which pages get a card, in that order. Replaces `source:` (added 2026-10-26) |
+| `show` | list | none | `image, subtitle, date, excerpt, tags` (or `all`): turns `display: cards` into post cards. Title is always shown. Without it the cards are unchanged (added 2026-10-26) |
+| `columns` | int 1-6 | theme ladder (3/2/1) | Card columns on wide screens; tablets get at most 2, phones 1. `1` lays a post card out with the picture beside the text (added 2026-10-26) |
+| `excerpt_length` | int or `"N sentences"` | `30` (words) | Length of the post-card excerpt (added 2026-10-26) |
+| `titles` | `page` / `link` | `page` | Card title: the page's own title, or the link text from the list (added 2026-10-26) |
+| `search` | | combined; **`off` for a hand-written list** | A curated list has no filter box unless `search:` asks for one (added 2026-10-26) |
+
+Post-card excerpts, dates and tags come from `_data/pagePreviews.json`, written by the
+preprocessor (excerpt: `excerpt:` or `description:` frontmatter, else the first prose of
+the page; date: `date_created`). It is build data and never served.
 
 The filter input reads the shared `--sv-*` search-surface tokens, so it matches the
 site-wide Pagefind bar in whatever theme is active.

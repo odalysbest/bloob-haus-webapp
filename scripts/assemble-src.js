@@ -21,7 +21,12 @@ import {
 import { generateFavicons } from "./generate-favicons.js";
 import { generateBloobIcons } from "./generate-bloob-icons.js";
 import { generateBackground, generatePageBackgrounds } from "./generate-background.js";
-import { EMBED_TARGETS } from "./utils/bloob-settings-reader.js";
+import { composeSnippets } from "./utils/bloob-settings-reader.js";
+import { parseStructuredData } from "./utils/structured-data.js";
+import { parseLicense } from "./utils/license.js";
+import { resolveAiAccess } from "./utils/ai-access.js";
+import { safeDecode } from "./utils/safe-decode.js";
+import { loadTemplateShapes, themeSupportsObjects, writeTemplateShapeLayouts } from "./utils/template-shapes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +41,26 @@ const THEMES_DIR = path.join(ROOT_DIR, "themes");
  *   is skipped so there is no permalink collision at "/".
  */
 /**
+ * How a site shows up in search engines (`features.show_in_search`):
+ *   yes   — sitemap.xml (named in robots.txt) hands them every listed page
+ *   quiet — no sitemap; a page is found only if something links to it (the default)
+ *   no    — every page carries `noindex` (partials/robots-meta.njk)
+ * Unlisted pages are never listed, whatever the site says.
+ *
+ * gray-matter (YAML 1.1) reads a bare `yes`/`no` as true/false, so those count too.
+ * Anything else is quiet: an unclear value never opens a site to search.
+ *
+ * @param {object} [features]
+ * @returns {"yes"|"quiet"|"no"}
+ */
+export function showInSearch(features) {
+  const value = features?.show_in_search;
+  if (value === "yes" || value === true) return "yes";
+  if (value === "no" || value === false) return "no";
+  return "quiet";
+}
+
+/**
  * Decide which `themes/_base/pages/` files to copy into src/.
  *
  * A theme overrides a base page by BASENAME, not by filename, so `tags.njk` in
@@ -49,10 +74,14 @@ const THEMES_DIR = path.join(ROOT_DIR, "themes");
  *
  * @param {string[]} baseEntries  filenames in themes/_base/pages/
  * @param {string[]} themeFiles   filenames in themes/<theme>/pages/ (files only)
- * @param {{rssEnabled?: boolean}} opts
+ * sitemap.njk is opt-in: a sitemap hands search engines every listed page, so it is only
+ * built when the site says `features.show_in_search: yes`. robots.njk is built for every site:
+ * it carries what AIs may do (SET7), and names the sitemap only when there is one.
+ *
+ * @param {{rssEnabled?: boolean, showInSearch?: "yes"|"quiet"|"no"}} opts
  * @returns {{copy: string[], skipped: {entry: string, reason: string}[]}}
  */
-export function selectBasePages(baseEntries, themeFiles, { rssEnabled = true } = {}) {
+export function selectBasePages(baseEntries, themeFiles, { rssEnabled = true, showInSearch = "quiet" } = {}) {
   const themeBasenames = new Set(themeFiles.map((f) => path.parse(f).name));
   const copy = [];
   const skipped = [];
@@ -60,6 +89,10 @@ export function selectBasePages(baseEntries, themeFiles, { rssEnabled = true } =
   for (const entry of baseEntries) {
     if (entry === "feed.njk" && !rssEnabled) {
       skipped.push({ entry, reason: "features.rss: false" });
+      continue;
+    }
+    if (entry === "sitemap.njk" && showInSearch !== "yes") {
+      skipped.push({ entry, reason: "features.show_in_search is not yes" });
       continue;
     }
     if (themeBasenames.has(path.parse(entry).name)) {
@@ -70,6 +103,26 @@ export function selectBasePages(baseEntries, themeFiles, { rssEnabled = true } =
   }
 
   return { copy, skipped };
+}
+
+/**
+ * Compose `<src>/_headers` (Cloudflare Pages) from the theme's own `_headers` and, when magic
+ * machines are on, `lib/magic-machines/_headers`. eleventy.config.js copies the result to the
+ * output root; build-site step 7.1 may append the show_in_search: no rule after that.
+ * With only one source the file is copied byte for byte, so sites without a theme `_headers`
+ * get exactly what they got before. Removes a stale composed file when no source remains.
+ */
+export async function writeComposedHeaders({ themeFile, magicFile, magicEnabled, srcDir }) {
+  const parts = [];
+  if (await fs.pathExists(themeFile)) parts.push(await fs.readFile(themeFile, "utf-8"));
+  if (magicEnabled && (await fs.pathExists(magicFile))) parts.push(await fs.readFile(magicFile, "utf-8"));
+  const dest = path.join(srcDir, "_headers");
+  if (parts.length === 0) {
+    await fs.remove(dest);
+    return;
+  }
+  const joined = parts.map((p) => (p.endsWith("\n") ? p : `${p}\n`)).join("\n");
+  await fs.outputFile(dest, parts.length === 1 ? parts[0] : joined);
 }
 
 export async function assembleSrc(config, contentDir = null) {
@@ -130,6 +183,13 @@ export async function assembleSrc(config, contentDir = null) {
     }
   }
 
+  // Step 2b.6: One-line layouts for template shapes drawn by the engine (themes with objects only)
+  const templateLayouts = await writeTemplateShapeLayouts(await loadTemplateShapes(visualizersDir), {
+    objects: themeSupportsObjects(config, ROOT_DIR),
+    layoutsDir: path.join(SRC_DIR, "_includes", "layouts"),
+  });
+  for (const name of templateLayouts) console.log(`[assemble] Engine layout: layouts/${name}`);
+
   // Step 2c: Copy base layouts (theme layouts in Step 3 override these)
   if (fs.existsSync(path.join(baseDir, "layouts"))) {
     console.log("[assemble] Copying base layouts...");
@@ -153,6 +213,7 @@ export async function assembleSrc(config, contentDir = null) {
     const basePageEntries = await fs.readdir(path.join(baseDir, "pages"));
     const { copy, skipped } = selectBasePages(basePageEntries, themePageFiles, {
       rssEnabled: config.features?.rss !== false,
+      showInSearch: showInSearch(config.features),
     });
 
     for (const { entry, reason } of skipped) {
@@ -300,6 +361,14 @@ export async function assembleSrc(config, contentDir = null) {
   }
   await fs.writeJson(path.join(SRC_DIR, "_data", "themeVisualizerCss.json"), themeVizCssNames);
 
+  // Step 6.6: Cloudflare Pages _headers (theme rules + magic-machine rules)
+  await writeComposedHeaders({
+    themeFile: path.join(themeDir, "_headers"),
+    magicFile: path.join(ROOT_DIR, "lib", "magic-machines", "_headers"),
+    magicEnabled: config.features?.magic_machines !== false,
+    srcDir: SRC_DIR,
+  });
+
   // Step 7: Generate src/_data/site.js from config
   console.log("[assemble] Generating site data...");
   await generateSiteData(config);
@@ -430,7 +499,7 @@ export async function resolveLogoUrl(value, srcDir) {
     // Decode for disk lookups; a literal % that isn't an escape falls back to the raw string
     let decoded;
     try {
-      decoded = decodeURIComponent(p);
+      decoded = safeDecode(p);
     } catch {
       decoded = p;
     }
@@ -483,14 +552,23 @@ async function generateSiteData(config) {
   const backgroundImages = await generatePageBackgrounds({ srcDir: SRC_DIR });
 
   // Snippet embeds: expose every parsed fence as site.embeds[name], and pre-concatenate
-  // the auto-injected ones into site.snippets.{head,bodyEnd} for the shared partials.
+  // the auto-injected ones (incl. structured-data, wrapped as JSON-LD) into
+  // site.snippets.{head,bodyEnd} for the shared partials.
   const embeds = config.embeds || {};
-  const snippets = { head: "", bodyEnd: "" };
-  for (const [name, target] of Object.entries(EMBED_TARGETS)) {
-    if (embeds[name]) {
-      snippets[target] = snippets[target] ? `${snippets[target]}\n${embeds[name]}` : embeds[name];
-    }
+  const snippets = composeSnippets(embeds);
+  // The structured-data fence, parsed: partials/structured-data.njk merges it with the page's own
+  // data (its license) into one JSON-LD block per page.
+  const structuredData = parseStructuredData(embeds["structured-data"]);
+
+  // The site's license (scripts/utils/license.js); a note's own `license:` overrides it.
+  const license = parseLicense(config.site.license);
+  if (license && !license.known) {
+    console.warn(`[assemble] license "${license.name}" is not one Bloob Haus recognises: shown as written, with no link.`);
   }
+
+  // What AIs may do (SET7): defaults filled in here, written to robots.txt by robots.njk.
+  const { warnings: aiWarnings, ...ai } = resolveAiAccess(config.ai);
+  for (const warning of aiWarnings) console.warn(`[assemble] ${warning}`);
 
   const siteJs = `// Generated by assemble-src.js — do not edit manually
 export default {
@@ -509,10 +587,13 @@ export default {
   permalinks: {
     strategy: ${JSON.stringify(config.permalinks?.strategy || "preserve-case")},
   },
-  features: ${JSON.stringify(config.features || {})},
+  features: ${JSON.stringify({ ...config.features, show_in_search: showInSearch(config.features) })},
   theme_settings: ${JSON.stringify(config.theme_settings || {})},
   embeds: ${JSON.stringify(embeds)},
   snippets: ${JSON.stringify(snippets)},
+  structured_data: ${JSON.stringify(structuredData)},
+  license: ${JSON.stringify(license)},
+  ai: ${JSON.stringify(ai)},
   analytics: ${JSON.stringify(config.analytics || {})},
 };
 `;
