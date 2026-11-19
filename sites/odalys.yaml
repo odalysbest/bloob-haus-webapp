@@ -36,3 +36,6 @@ permalinks:
 # Build features. Full list: docs/architecture/settings-registry.md
 features:
   search: true
+  # Only copy images/PDFs/videos that a published note actually uses. Without this,
+  # every attachment in the vault is deployed, including ones only private notes use.
+  referenced_attachments_only: true
