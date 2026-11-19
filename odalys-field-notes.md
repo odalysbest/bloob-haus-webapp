@@ -14,6 +14,31 @@ Newest entries at the top.
 
 ---
 
+## 2026-11-18 — second upstream pull (170 commits), theme-fork drift, two publish-safety surprises
+Merged `upstream/main` again (7 ahead / 170 behind). Zero merge conflicts, deploy workflow survived.
+Afterward 2 tests failed, and both were exactly the drift the August fork note predicted: upstream moved
+every theme's `head.njk` onto shared `seo-meta.njk` / `robots-meta.njk` partials, but `themes/odalys/`
+is a `cp` of an old melt, so it was missed. I'd never customized those files, so I re-copied
+`head.njk`, `footer.njk`, and `main.css` from melt and all 1631 tests passed. The tests did catch it,
+which is good. **Suggestion:** a forked theme needs a "what changed in my parent theme since I forked"
+step (record the fork commit in `theme.yaml`, plus a script that diffs against it).
+
+Switched the vault to `publish_mode: allowlist` and rewrote `index.md` as the homepage nav. The filter
+behaves (19 of ~30 notes published, 0 broken links). Two things surprised me:
+
+1. **Stale build dirs become public folder pages.** `src-odalys/` only gets its `.md` files cleaned
+   between builds, not its directories. Empty dirs from August's publish-everything build
+   (`Collective-Livelihood-Garden/`, `Untitled/`, `Untitled-1/`) got auto-generated folder-index stubs,
+   so the names of folders that are now private showed up as pages. Running `rm -rf src-odalys` fixed it,
+   and CI is safe because it builds from a fresh clone. But it's a local-preview trap, and
+   preprocess could prune empty dirs before Step 9.5.
+2. **Attachments are published regardless of publish status.** `copyAttachments`
+   (`scripts/utils/attachment-resolver.js`) globs *every* image/PDF in the vault into `_site`. They're
+   not linked from anywhere, but they can be reached by URL, and Obsidian's `Pasted image <timestamp>.png`
+   names are guessable. In allowlist mode, "private by default" doesn't hold for media. Example: a 7 MB
+   screenshot that belongs to an unpublished note gets deployed. **Suggestion (shared infra, PR
+   candidate):** in allowlist mode, copy only the attachments that published notes reference.
+
 ## 2026-08-10 — upstream pull (103 commits) + theme fork, both clean
 Synced the fork with `upstream/main` — it was 2 ahead / 103 behind. The merge auto-resolved with
 **zero conflicts** (223 files, +16.7k/-3.9k), and all 851 tests passed after `npm install`. Two things
